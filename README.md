@@ -6,10 +6,11 @@ Sistema de detección de drones con análisis de audio y video.
 
 ## Repositorios del Proyecto ADAS3
 
-Este proyecto está dividido en dos repositorios:
+Este proyecto está dividido en tres repositorios:
 
-- **[ADAS3 Server](https://github.com/zarkentroska/ADAS3-Server)** (este repositorio) - Servidor del sistema
-- **[ADAS3 Client](https://github.com/zarkentroska/ADAS3-Client)** - Cliente del sistema
+- **[ADAS3 Server](https://github.com/zarkentroska/ADAS3-Server)** (este repositorio) - Código fuente del servidor
+- **[ADAS3 Client](https://github.com/zarkentroska/ADAS3-Client)** - Código fuente del cliente
+- **[ADAS3 Releases](https://github.com/zarkentroska/adas3)** - Ejecutables compilados para todas las plataformas
 
 ## Actualizar el repositorio
 
