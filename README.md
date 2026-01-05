@@ -1,6 +1,8 @@
-# Proyecto ADAS3
+# ADAS3 Server
 
 Sistema de detección de drones con análisis de audio y video.
+
+**Versión: v0.5 Alpha**
 
 ## Configuración del Repositorio GitHub
 

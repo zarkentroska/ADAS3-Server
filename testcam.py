@@ -190,7 +190,7 @@ ip_y_puerto = cargar_ip()
 base_url = f"http://{ip_y_puerto}"
 video_url = base_url + "/video"
 audio_url = base_url + "/audio.wav"
-window_name = 'Detector de Drones (Audio, Video y RF)'
+window_name = 'ADAS3 Server'
 
 print(f"Iniciando con IP guardada: {base_url}")
 
@@ -968,19 +968,16 @@ def detect_drone_rf(freqs, levels):
     
     # Detección simple de picos: un punto es un pico si es mayor que sus vecinos
     # y está por encima del umbral
-    # Reducir min_distance para detectar picos más cercanos (mejor para 200 puntos)
-    min_distance = max(1, len(levels_valid) // 100)  # Más permisivo: permite picos más cercanos
+    min_distance = max(1, len(levels_valid) // 50)  # Distancia mínima entre picos
     peaks = []
     
-    # Buscar picos con una ventana más pequeña para mejor detección
     for i in range(min_distance, len(levels_valid) - min_distance):
         if levels_valid[i] < peak_threshold_relative:
             continue
         
-        # Verificar que sea un máximo local (comparar con vecinos más cercanos)
+        # Verificar que sea un máximo local
         is_peak = True
-        window_size = max(2, min_distance // 2)  # Ventana más pequeña para mejor detección
-        for j in range(max(0, i - window_size), min(len(levels_valid), i + window_size + 1)):
+        for j in range(max(0, i - min_distance), min(len(levels_valid), i + min_distance + 1)):
             if j != i and levels_valid[j] >= levels_valid[i]:
                 is_peak = False
                 break
@@ -1041,27 +1038,18 @@ def detect_drone_rf(freqs, levels):
             # 3. Potencia absoluta
             
             height_above_noise = peak_level - noise_level
-            # Normalizar a 30 dB (más generoso que 40 dB)
-            height_confidence = min(1.0, height_above_noise / 30.0)
-            # Bonus si está por encima de 20 dB
-            if height_above_noise > 20:
-                height_confidence = min(1.0, height_confidence * 1.2)
+            height_confidence = min(1.0, height_above_noise / 40.0)  # Normalizar a 40 dB
             
-            # Ancho de banda óptimo alrededor de 20-25 MHz, pero más permisivo
+            # Ancho de banda óptimo alrededor de 20-25 MHz
             optimal_bw = 22.5
             bw_diff = abs(bandwidth_mhz - optimal_bw)
-            # Más permisivo: penalizar menos por diferencias de ancho de banda
-            bw_confidence = max(0.0, 1.0 - (bw_diff / 30.0))  # 30 en lugar de 20
+            bw_confidence = max(0.0, 1.0 - (bw_diff / 20.0))
             
             # Potencia absoluta (picos más fuertes = más confianza)
-            # Más generoso: normalizar a 20 dB en lugar de 30
-            power_confidence = min(1.0, max(0.0, (peak_level - PEAK_THRESHOLD) / 20.0))
-            # Bonus si está muy por encima del umbral
-            if peak_level > PEAK_THRESHOLD + 10:
-                power_confidence = min(1.0, power_confidence * 1.15)
+            power_confidence = min(1.0, (peak_level - PEAK_THRESHOLD) / 30.0)
             
-            # Confianza combinada (dar más peso a la altura sobre el ruido)
-            confidence = (height_confidence * 0.5 + bw_confidence * 0.25 + power_confidence * 0.25)
+            # Confianza combinada
+            confidence = (height_confidence * 0.4 + bw_confidence * 0.3 + power_confidence * 0.3)
             
             if confidence > best_confidence:
                 best_confidence = confidence
@@ -1072,26 +1060,20 @@ def detect_drone_rf(freqs, levels):
     current_time = time.time()
     rf_drone_detection_history = [
         (t, freq, conf) for t, freq, conf in rf_drone_detection_history
-        if current_time - t < 3.0  # Mantener últimos 3 segundos (más permisivo)
+        if current_time - t < 2.0  # Mantener últimos 2 segundos
     ]
     
-    if best_confidence > 0.4:  # Umbral de confianza más bajo para capturar más detecciones
+    if best_confidence > 0.5:  # Umbral de confianza
         rf_drone_detection_history.append((current_time, best_frequency, best_confidence))
         
-        # Requerir al menos 1 detección en los últimos 3 segundos (más permisivo)
-        if len(rf_drone_detection_history) >= 1:
-            # Usar la confianza más alta del historial reciente
-            max_confidence = max([conf for _, _, conf in rf_drone_detection_history])
-            # Calcular frecuencia promedio ponderada por confianza
-            total_weight = sum([conf for _, _, conf in rf_drone_detection_history])
-            if total_weight > 0:
-                avg_frequency = sum([freq * conf for _, freq, conf in rf_drone_detection_history]) / total_weight
-            else:
-                avg_frequency = best_frequency
+        # Requerir al menos 2 detecciones en los últimos 2 segundos
+        if len(rf_drone_detection_history) >= 2:
+            avg_confidence = np.mean([conf for _, _, conf in rf_drone_detection_history])
+            avg_frequency = np.mean([freq for _, freq, _ in rf_drone_detection_history])
             
             return {
                 "is_drone": True,
-                "confidence": min(1.0, max_confidence),  # Usar la confianza más alta
+                "confidence": min(1.0, avg_confidence),
                 "frequency": avg_frequency
             }
     
@@ -1223,19 +1205,157 @@ def tinysa_render_worker():
 
     print("[TINYSA] Render Worker finalizado")
 
-def toggle_tinysa():
-    """
-    Activa/Desactiva y configura el TinySA.
-    Soporta dos modos:
-    - Serial directo: TinySA conectado al PC vía USB
-    - HTTP: TinySA conectado al Android, usando servidor como pasarela
-    """
+def start_tinysa_with_sequence(sequence):
+    """Inicia TinySA con una secuencia ya configurada."""
     global tinysa_running, tinysa_serial, current_tinysa_config
     global tinysa_thread, tinysa_render_thread, tinysa_data_ready, tinysa_image_ready
     global tinysa_sequence, tinysa_sequence_index, tinysa_current_label
-    global tinysa_menu_thread, tinysa_detected, tinysa_http_response
-    global tinysa_use_http  # Nueva variable para indicar modo HTTP
+    global tinysa_detected, tinysa_http_response, tinysa_use_http
     global tinysa_last_sequence_payload
+    
+    if not sequence:
+        print("No hay secuencia configurada para TinySA.")
+        return False
+    
+    tinysa_sequence = sequence
+    tinysa_sequence_index = 0
+    current_tinysa_config = tinysa_sequence[0]
+    tinysa_current_label = current_tinysa_config.get("label", "")
+    
+    # Decidir modo: primero intentar serial directo, luego HTTP
+    port = find_tinysa_port()
+    tinysa_detected = port is not None
+    
+    try:
+        if port:
+            # Modo serial directo (TinySA conectado al PC)
+            try:
+                print(f"Conectando a TinySA en {port} (modo serial directo)...")
+                tinysa_serial = serial.Serial(port, 921600, timeout=8.0)
+
+                tinysa_serial.flushInput()
+                tinysa_serial.write(b"abort\r")
+                tinysa_serial.read_until(b"ch> ")
+
+                tinysa_running = True
+                tinysa_use_http = False
+
+                with tinysa_data_lock:
+                    tinysa_data_ready = None
+
+                tinysa_thread = threading.Thread(
+                    target=tinysa_hardware_worker_serial, daemon=True
+                )
+                tinysa_thread.start()
+
+                tinysa_render_thread = threading.Thread(
+                    target=tinysa_render_worker, daemon=True
+                )
+                tinysa_render_thread.start()
+
+                print("TinySA Activado (modo serial directo)")
+                tinysa_detected = True
+                return True
+
+            except Exception as e:
+                print(f"Error al conectar TinySA por serial: {e}")
+                if tinysa_serial:
+                    try:
+                        tinysa_serial.close()
+                    except:
+                        pass
+                    tinysa_serial = None
+                tinysa_running = False
+                return False
+        else:
+            # Modo HTTP (TinySA conectado al Android)
+            print(f"[TINYSA] TinySA no detectado localmente, intentando modo HTTP...")
+            tinysa_use_http = True
+            
+            try:
+                # Convertir secuencia al formato JSON esperado por el servidor
+                sequence_json = []
+                for config in sequence:
+                    sequence_json.append({
+                        "start": int(config["start"]),
+                        "stop": int(config["stop"]),
+                        "points": int(config.get("points", TINYSA_POINTS)),
+                        "sweeps": int(config.get("sweeps", TIN_YSA_SWEEPS_PER_RANGE)),
+                        "label": config.get("label", "")
+                    })
+                
+                # Guardar copia profunda para poder rearmar la secuencia si el stream se corta
+                try:
+                    tinysa_last_sequence_payload = json.loads(json.dumps(sequence_json))
+                except Exception:
+                    tinysa_last_sequence_payload = sequence_json[:]
+                
+                # Enviar comando set_sequence
+                command = {
+                    "action": "set_sequence",
+                    "sequence": sequence_json
+                }
+                
+                if not send_tinysa_command(command):
+                    print("[TINYSA] Error configurando secuencia en servidor")
+                    def show_warning():
+                        root = Tk()
+                        root.withdraw()
+                        root.attributes("-topmost", True)
+                        messagebox.showwarning(
+                            "TinySA no disponible",
+                            "TinySA no detectado localmente ni en el servidor Android.\n"
+                            "Conéctalo vía USB al PC o al Android e intenta de nuevo."
+                        )
+                        root.destroy()
+                    threading.Thread(target=show_warning, daemon=True).start()
+                    return False
+                
+                # Iniciar scanning
+                if not send_tinysa_command({"action": "start"}):
+                    print("[TINYSA] Error iniciando scanning en servidor")
+                    return False
+
+                tinysa_running = True
+
+                with tinysa_data_lock:
+                    tinysa_data_ready = None
+
+                # Iniciar thread para recibir datos HTTP
+                tinysa_thread = threading.Thread(
+                    target=tinysa_hardware_worker, daemon=True
+                )
+                tinysa_thread.start()
+
+                # Iniciar thread de renderizado
+                tinysa_render_thread = threading.Thread(
+                    target=tinysa_render_worker, daemon=True
+                )
+                tinysa_render_thread.start()
+
+                print("TinySA Activado (modo HTTP)")
+                tinysa_detected = True
+                tinysa_use_http = True
+                return True
+
+            except Exception as e:
+                print(f"Error al conectar TinySA por HTTP: {e}")
+                tinysa_running = False
+                tinysa_use_http = False
+                return False
+    except Exception as e:
+        print(f"Error general al iniciar TinySA: {e}")
+        return False
+
+def toggle_tinysa():
+    """
+    Activa/Desactiva el TinySA usando la configuración seleccionada.
+    Si no hay configuración, muestra un mensaje.
+    """
+    global tinysa_running, tinysa_serial, tinysa_sequence
+    global tinysa_thread, tinysa_render_thread, tinysa_data_ready, tinysa_image_ready
+    global tinysa_sequence_index, tinysa_current_label
+    global tinysa_detected, tinysa_http_response, tinysa_use_http
 
     if tinysa_running:
         # Apagar
@@ -1267,173 +1387,75 @@ def toggle_tinysa():
         with tinysa_render_lock:
             tinysa_image_ready = None
 
-        tinysa_sequence = []
         tinysa_sequence_index = 0
         tinysa_current_label = ""
         tinysa_use_http = False
         print("TinySA Desactivado")
         return
 
+    # Intentar activar con la secuencia actual si existe
+    if tinysa_sequence and len(tinysa_sequence) > 0:
+        start_tinysa_with_sequence(tinysa_sequence)
+    else:
+        # No hay configuración, mostrar mensaje
+        def show_message():
+            root = Tk()
+            root.withdraw()
+            root.attributes("-topmost", True)
+            messagebox.showinfo(
+                "TinySA no configurado",
+                "Configura TinySA primero usando el botón de engranaje."
+            )
+            root.destroy()
+        threading.Thread(target=show_message, daemon=True).start()
+
+def open_tinysa_options_dialog():
+    """Abre la ventana de opciones TinySA en un hilo aparte."""
+    global tinysa_menu_thread
     if tinysa_menu_thread and tinysa_menu_thread.is_alive():
-        print("El menú de TinySA ya está abierto.")
         return
 
-    def enable_flow():
+    def runner():
         global tinysa_menu_thread, tinysa_sequence, tinysa_sequence_index
-        global current_tinysa_config, tinysa_current_label, tinysa_running
-        global tinysa_thread, tinysa_render_thread, tinysa_detected
-        global tinysa_serial, tinysa_use_http
-
-        selection_data = show_tinysa_menu()
-        selection = selection_data.get("selection")
-        if not selection:
-            tinysa_menu_thread = None
-            return
-
-        sequence = build_tinysa_sequence(
-            selection,
-            custom_data=selection_data.get("custom"),
-            advanced_ranges=selection_data.get("advanced"),
-        )
-
-        if not sequence:
-            print("Selección TinySA inválida.")
-            tinysa_menu_thread = None
-            return
-
-        tinysa_sequence = sequence
-        tinysa_sequence_index = 0
-        current_tinysa_config = tinysa_sequence[0]
-        tinysa_current_label = current_tinysa_config.get("label", "")
-
-        # Decidir modo: primero intentar serial directo, luego HTTP
-        port = find_tinysa_port()
-        tinysa_detected = port is not None
+        global current_tinysa_config, tinysa_current_label
         
         try:
-            if port:
-                # Modo serial directo (TinySA conectado al PC)
-                try:
-                    print(f"Conectando a TinySA en {port} (modo serial directo)...")
-                    tinysa_serial = serial.Serial(port, 921600, timeout=8.0)
+            selection_data = show_tinysa_menu()
+            selection = selection_data.get("selection")
+            if not selection:
+                tinysa_menu_thread = None
+                return
 
-                    tinysa_serial.flushInput()
-                    tinysa_serial.write(b"abort\r")
-                    tinysa_serial.read_until(b"ch> ")
+            sequence = build_tinysa_sequence(
+                selection,
+                custom_data=selection_data.get("custom"),
+                advanced_ranges=selection_data.get("advanced"),
+            )
 
-                    tinysa_running = True
-                    tinysa_use_http = False
+            if not sequence:
+                print("Selección TinySA inválida.")
+                tinysa_menu_thread = None
+                return
 
-                    with tinysa_data_lock:
-                        tinysa_data_ready = None
-
-                    tinysa_thread = threading.Thread(
-                        target=tinysa_hardware_worker_serial, daemon=True  # Usar worker serial
-                    )
-                    tinysa_thread.start()
-
-                    tinysa_render_thread = threading.Thread(
-                        target=tinysa_render_worker, daemon=True
-                    )
-                    tinysa_render_thread.start()
-
-                    print("TinySA Activado (modo serial directo)")
-                    tinysa_detected = True
-
-                except Exception as e:
-                    print(f"Error al conectar TinySA por serial: {e}")
-                    if tinysa_serial:
-                        try:
-                            tinysa_serial.close()
-                        except:
-                            pass
-                        tinysa_serial = None
-                    tinysa_running = False
-                    tinysa_menu_thread = None
-                    return
-            else:
-                # Modo HTTP (TinySA conectado al Android)
-                print(f"[TINYSA] TinySA no detectado localmente, intentando modo HTTP...")
-                tinysa_use_http = True
-                
-                try:
-                    # Convertir secuencia al formato JSON esperado por el servidor
-                    sequence_json = []
-                    for config in sequence:
-                        sequence_json.append({
-                            "start": int(config["start"]),
-                            "stop": int(config["stop"]),
-                            "points": int(config.get("points", TINYSA_POINTS)),
-                            "sweeps": int(config.get("sweeps", TIN_YSA_SWEEPS_PER_RANGE)),
-                            "label": config.get("label", "")
-                        })
-                    
-                    # Guardar copia profunda para poder rearmar la secuencia si el stream se corta
-                    try:
-                        tinysa_last_sequence_payload = json.loads(json.dumps(sequence_json))
-                    except Exception:
-                        tinysa_last_sequence_payload = sequence_json[:]
-                    
-                    # Enviar comando set_sequence
-                    command = {
-                        "action": "set_sequence",
-                        "sequence": sequence_json
-                    }
-                    
-                    if not send_tinysa_command(command):
-                        print("[TINYSA] Error configurando secuencia en servidor")
-                        def show_warning():
-                            root = Tk()
-                            root.withdraw()
-                            root.attributes("-topmost", True)
-                            messagebox.showwarning(
-                                "TinySA no disponible",
-                                "TinySA no detectado localmente ni en el servidor Android.\n"
-                                "Conéctalo vía USB al PC o al Android e intenta de nuevo."
-                            )
-                            root.destroy()
-                        threading.Thread(target=show_warning, daemon=True).start()
-                        tinysa_menu_thread = None
-                        return
-                    
-                    # Iniciar scanning
-                    if not send_tinysa_command({"action": "start"}):
-                        print("[TINYSA] Error iniciando scanning en servidor")
-                        tinysa_menu_thread = None
-                        return
-
-                    tinysa_running = True
-
-                    with tinysa_data_lock:
-                        tinysa_data_ready = None
-
-                    # Iniciar thread para recibir datos HTTP
-                    tinysa_thread = threading.Thread(
-                        target=tinysa_hardware_worker, daemon=True  # Usar worker HTTP
-                    )
-                    tinysa_thread.start()
-
-                    # Iniciar thread de renderizado
-                    tinysa_render_thread = threading.Thread(
-                        target=tinysa_render_worker, daemon=True
-                    )
-                    tinysa_render_thread.start()
-
-                    print("TinySA Activado (modo HTTP)")
-                    # El estado se actualizará mediante poll_tinysa_presence
-                    tinysa_detected = True
-                    tinysa_use_http = True
-
-                except Exception as e:
-                    print(f"Error al conectar TinySA por HTTP: {e}")
-                    tinysa_running = False
-                    tinysa_use_http = False
+            # Guardar la secuencia para uso futuro
+            tinysa_sequence = sequence
+            tinysa_sequence_index = 0
+            current_tinysa_config = tinysa_sequence[0]
+            tinysa_current_label = current_tinysa_config.get("label", "")
+            
+            # Si TinySA está corriendo, reiniciarlo con la nueva configuración
+            if tinysa_running:
+                # Apagar primero
+                old_running = True
+                toggle_tinysa()
+                # Activar con nueva configuración
+                if old_running:
+                    start_tinysa_with_sequence(tinysa_sequence)
         finally:
             tinysa_menu_thread = None
 
-    tinysa_menu_thread = threading.Thread(target=enable_flow, daemon=True)
+    tinysa_menu_thread = threading.Thread(target=runner, daemon=True)
     tinysa_menu_thread.start()
-
 
 def overlay_tinysa_graph(frame):
     """
@@ -2585,18 +2607,105 @@ def draw_tinysa_indicator(frame, mouse_pos, click_pos):
     
     return draw_interactive_button(frame, text, x, y, 0, 0, color, mouse_pos, click_pos, align_right=True)
 
-def draw_audio_detection_toggle(frame, mouse_pos, click_pos):
-    x = frame.shape[1] - 40
-    y = 110
+def draw_tinysa_settings_icon(frame, mouse_pos, click_pos):
+    """Dibuja el icono PNG de ajustes para TinySA."""
+    icon = get_yolo_settings_icon()  # Reutilizamos el mismo icono
+    if icon is None:
+        return frame, False
 
+    h, w = icon.shape[:2]
+    padding = 10
+    x2 = frame.shape[1] - 10
+    x1 = x2 - w
+    y1 = 75 - h // 2  # Posición al lado de TinySA (y=80)
+    y2 = y1 + h
+
+    x1 = max(0, x1)
+    y1 = max(0, y1)
+    x2 = min(frame.shape[1], x2)
+    y2 = min(frame.shape[0], y2)
+
+    roi = frame[y1:y2, x1:x2]
+    icon_resized = icon[: y2 - y1, : x2 - x1]
+
+    if icon_resized.shape[2] == 4:
+        alpha = icon_resized[:, :, 3] / 255.0
+        for c in range(3):
+            roi[:, :, c] = (1 - alpha) * roi[:, :, c] + alpha * icon_resized[:, :, c]
+    else:
+        roi[:] = icon_resized
+
+    mx, my = mouse_pos
+    is_hover = x1 <= mx <= x2 and y1 <= my <= y2
+    is_clicked = False
+    if click_pos:
+        cx_click, cy_click = click_pos
+        if x1 <= cx_click <= x2 and y1 <= cy_click <= y2:
+            is_clicked = True
+
+    if is_hover:
+        cv2.rectangle(frame, (x1, y1), (x2, y2), (255, 255, 255), 1, cv2.LINE_AA)
+
+    return frame, is_clicked
+
+def draw_volume_icon_muted(frame, x, y, size=20):
+    """Dibuja un icono de volumen tachado (muted)."""
+    # Dibujar el icono de volumen básico
+    # Círculo pequeño (altavoz)
+    center_x = x + size // 2
+    center_y = y + size // 2
+    radius = size // 3
+    cv2.circle(frame, (center_x, center_y), radius, (200, 200, 200), 2)
+    
+    # Línea diagonal que cruza (tachado)
+    offset = size // 4
+    cv2.line(frame, 
+             (center_x - offset, center_y - offset),
+             (center_x + offset, center_y + offset),
+             (200, 200, 200), 2, cv2.LINE_AA)
+    
+    return frame
+
+def draw_volume_icon_unmuted(frame, x, y, size=20):
+    """Dibuja un icono de volumen sin tachar (activo)."""
+    # Dibujar el icono de volumen básico
+    center_x = x + size // 2
+    center_y = y + size // 2
+    radius = size // 3
+    cv2.circle(frame, (center_x, center_y), radius, (0, 255, 0), 2)
+    
+    # Ondas de sonido (líneas curvas)
+    wave_x = center_x + radius + 2
+    for i in range(2):
+        wave_radius = 3 + i * 3
+        cv2.ellipse(frame, (wave_x, center_y), (wave_radius, wave_radius), 0, 0, 180, (0, 255, 0), 1)
+    
+    return frame
+
+def draw_audio_detection_toggle(frame, mouse_pos, click_pos):
+    """Dibuja el indicador de detección de audio con icono de volumen a la izquierda."""
+    x_text = frame.shape[1] - 40
+    y = 110
+    
+    # Posición del icono (a la izquierda del texto)
+    icon_size = 20
+    icon_x = x_text - 120  # Espacio para el icono antes del texto
+    icon_y = y - icon_size // 2
+    
+    # Dibujar icono de volumen
     if audio_detection_enabled:
+        # Icono sin tachar (activo/transmite audio)
+        frame = draw_volume_icon_unmuted(frame, icon_x, icon_y, icon_size)
         color = (0, 255, 0)
         text = "DET AUDIO: ON"
     else:
+        # Icono tachado (muted)
+        frame = draw_volume_icon_muted(frame, icon_x, icon_y, icon_size)
         color = (0, 0, 255)
         text = "DET AUDIO: OFF"
-
-    return draw_interactive_button(frame, text, x, y, 0, 0, color, mouse_pos, click_pos, align_right=True)
+    
+    # Dibujar el texto como botón interactivo
+    return draw_interactive_button(frame, text, x_text, y, 0, 0, color, mouse_pos, click_pos, align_right=True)
 
 
 def open_yolo_options_dialog():
@@ -2673,10 +2782,6 @@ def draw_tinysa_message(frame):
     if rf_result.get("is_drone", False) and rf_drone_detection_enabled:
         confidence = rf_result.get("confidence", 0.0)
         frequency = rf_result.get("frequency")
-        
-        # Solo mostrar aviso si la confianza es >= 60%
-        if confidence < 0.6:
-            return frame
         
         if frequency:
             freq_mhz = frequency / 1e6
@@ -3309,6 +3414,10 @@ while not stop_program:
         frame_negro, tinysa_clicked = draw_tinysa_indicator(frame_negro, current_mouse, current_click)
         if tinysa_clicked:
              toggle_tinysa()
+        frame_negro, tinysa_settings_clicked = draw_tinysa_settings_icon(frame_negro, current_mouse, current_click)
+        if tinysa_settings_clicked:
+            open_tinysa_options_dialog()
+            current_click = None
         
         frame_negro, _ = draw_audio_indicator(frame_negro, current_mouse, current_click)
         frame_negro, _ = draw_yolo_indicator(frame_negro, current_mouse, current_click)
@@ -3420,6 +3529,10 @@ while not stop_program:
         frame, tinysa_clicked = draw_tinysa_indicator(frame, current_mouse, current_click)
         if tinysa_clicked:
             toggle_tinysa()
+        frame, tinysa_settings_clicked = draw_tinysa_settings_icon(frame, current_mouse, current_click)
+        if tinysa_settings_clicked:
+            open_tinysa_options_dialog()
+            current_click = None
             
         # 4. Detección audio
         frame, audio_det_clicked = draw_audio_detection_toggle(frame, current_mouse, current_click)
