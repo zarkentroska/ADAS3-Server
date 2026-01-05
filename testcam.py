@@ -36,6 +36,8 @@ YOLO_MODELS_CONFIG = os.path.join(BASE_DIR, "yolo_models_config.json")
 AUDIO_MEAN_PATH = os.path.join(BASE_DIR, "audio_mean.npy")
 AUDIO_STD_PATH = os.path.join(BASE_DIR, "audio_std.npy")
 SETTINGS_ICON_PATH = os.path.join(BASE_DIR, "settings.png")
+MUTE_ICON_PATH = os.path.join(BASE_DIR, "mute.png")
+VOL_ICON_PATH = os.path.join(BASE_DIR, "vol.png")
 
 # Estado de modelos YOLO
 yolo_model_path = YOLO_DEFAULT_MODEL
@@ -147,6 +149,37 @@ def get_yolo_settings_icon():
             cv2.circle(fallback, (size // 2, size // 2), size // 2 - 2, (90, 90, 90, 255), -1, cv2.LINE_AA)
             yolo_settings_icon = fallback
     return yolo_settings_icon
+
+def get_audio_volume_icon(muted=True):
+    """Carga y retorna el icono de volumen (mute.png o vol.png)."""
+    global mute_icon, vol_icon
+    icon_path = MUTE_ICON_PATH if muted else VOL_ICON_PATH
+    icon_cache = mute_icon if muted else vol_icon
+    
+    if icon_cache is None:
+        if os.path.exists(icon_path):
+            icon = cv2.imread(icon_path, cv2.IMREAD_UNCHANGED)
+            if icon is not None:
+                desired_size = 24
+                icon = cv2.resize(icon, (desired_size, desired_size), interpolation=cv2.INTER_AREA)
+                if muted:
+                    mute_icon = icon
+                else:
+                    vol_icon = icon
+                return icon
+        # Fallback si no existe el archivo
+        size = 24
+        fallback = np.zeros((size, size, 4), dtype=np.uint8)
+        cv2.circle(fallback, (size // 2, size // 2), size // 3, (200, 200, 200, 255), 2)
+        if muted:
+            # Dibujar línea tachada
+            cv2.line(fallback, (size // 4, size // 4), (3 * size // 4, 3 * size // 4), (200, 200, 200, 255), 2)
+            mute_icon = fallback
+        else:
+            vol_icon = fallback
+        return fallback
+    
+    return icon_cache
 
 def cargar_ip():
     """Carga la última IP guardada o retorna la por defecto"""
@@ -1896,6 +1929,8 @@ yolo_iou_threshold = IOU_THRESHOLD
 yolo_threshold_lock = threading.Lock()
 yolo_reload_requested = False
 yolo_settings_icon = None
+mute_icon = None
+vol_icon = None
 yolo_slider_active = None
 rf_slider_active = None
 
@@ -2527,22 +2562,10 @@ def draw_interactive_button(frame, text, x_start, y_center, w, h, text_color, mo
     
     return frame, is_clicked
 
-def draw_audio_indicator(frame, mouse_pos, click_pos):
-    x = frame.shape[1] - 40
-    y = 20
-    
-    if audio_enabled and audio_thread and audio_thread.is_alive():
-        color = (0, 255, 0)
-        text = "TRANSMISION DE AUDIO: ON"
-    else:
-        color = (0, 0, 255)
-        text = "TRANSMISION DE AUDIO: OFF"
-    
-    return draw_interactive_button(frame, text, x, y, 0, 0, color, mouse_pos, click_pos, align_right=True)
 
 def draw_yolo_indicator(frame, mouse_pos, click_pos, detecciones=0):
     x = frame.shape[1] - 40
-    y = 50
+    y = 20
     
     if yolo_enabled:
         color = (0, 255, 0)
@@ -2563,7 +2586,7 @@ def draw_yolo_settings_icon(frame, mouse_pos, click_pos):
     padding = 10
     x2 = frame.shape[1] - 10
     x1 = x2 - w
-    y1 = 45 - h // 2
+    y1 = 15 - h // 2
     y2 = y1 + h
 
     x1 = max(0, x1)
@@ -2596,7 +2619,7 @@ def draw_yolo_settings_icon(frame, mouse_pos, click_pos):
 
 def draw_tinysa_indicator(frame, mouse_pos, click_pos):
     x = frame.shape[1] - 40
-    y = 80
+    y = 50
     
     if tinysa_running:
         color = (0, 255, 0)
@@ -2617,7 +2640,7 @@ def draw_tinysa_settings_icon(frame, mouse_pos, click_pos):
     padding = 10
     x2 = frame.shape[1] - 10
     x1 = x2 - w
-    y1 = 75 - h // 2  # Posición al lado de TinySA (y=80)
+    y1 = 45 - h // 2  # Posición al lado de TinySA (y=50)
     y2 = y1 + h
 
     x1 = max(0, x1)
@@ -2648,59 +2671,60 @@ def draw_tinysa_settings_icon(frame, mouse_pos, click_pos):
 
     return frame, is_clicked
 
-def draw_volume_icon_muted(frame, x, y, size=20):
-    """Dibuja un icono de volumen tachado (muted)."""
-    # Dibujar el icono de volumen básico
-    # Círculo pequeño (altavoz)
-    center_x = x + size // 2
-    center_y = y + size // 2
-    radius = size // 3
-    cv2.circle(frame, (center_x, center_y), radius, (200, 200, 200), 2)
+def draw_audio_volume_icon(frame, mouse_pos, click_pos):
+    """Dibuja el icono de volumen (mute.png o vol.png) a la izquierda de DET AUDIO."""
+    x_text = frame.shape[1] - 40
+    y_text = 80
     
-    # Línea diagonal que cruza (tachado)
-    offset = size // 4
-    cv2.line(frame, 
-             (center_x - offset, center_y - offset),
-             (center_x + offset, center_y + offset),
-             (200, 200, 200), 2, cv2.LINE_AA)
+    # Posición del icono: más a la izquierda y ligeramente más arriba
+    icon = get_audio_volume_icon(muted=not audio_enabled)
+    if icon is None:
+        return frame, False
     
-    return frame
-
-def draw_volume_icon_unmuted(frame, x, y, size=20):
-    """Dibuja un icono de volumen sin tachar (activo)."""
-    # Dibujar el icono de volumen básico
-    center_x = x + size // 2
-    center_y = y + size // 2
-    radius = size // 3
-    cv2.circle(frame, (center_x, center_y), radius, (0, 255, 0), 2)
+    h, w = icon.shape[:2]
+    icon_x = x_text - 175  # Un poco más a la izquierda
+    icon_y = y_text - h // 2 - 6  # Muy poco más arriba (2-3 píxeles adicionales)
     
-    # Ondas de sonido (líneas curvas)
-    wave_x = center_x + radius + 2
-    for i in range(2):
-        wave_radius = 3 + i * 3
-        cv2.ellipse(frame, (wave_x, center_y), (wave_radius, wave_radius), 0, 0, 180, (0, 255, 0), 1)
+    x1 = max(0, icon_x)
+    y1 = max(0, icon_y)
+    x2 = min(frame.shape[1], icon_x + w)
+    y2 = min(frame.shape[0], icon_y + h)
     
-    return frame
+    if x2 <= x1 or y2 <= y1:
+        return frame, False
+    
+    roi = frame[y1:y2, x1:x2]
+    icon_resized = icon[: y2 - y1, : x2 - x1]
+    
+    if icon_resized.shape[2] == 4:
+        alpha = icon_resized[:, :, 3] / 255.0
+        for c in range(3):
+            roi[:, :, c] = (1 - alpha) * roi[:, :, c] + alpha * icon_resized[:, :, c]
+    else:
+        roi[:] = icon_resized
+    
+    mx, my = mouse_pos
+    is_hover = x1 <= mx <= x2 and y1 <= my <= y2
+    is_clicked = False
+    if click_pos:
+        cx_click, cy_click = click_pos
+        if x1 <= cx_click <= x2 and y1 <= cy_click <= y2:
+            is_clicked = True
+    
+    if is_hover:
+        cv2.rectangle(frame, (x1, y1), (x2, y2), (255, 255, 255), 1, cv2.LINE_AA)
+    
+    return frame, is_clicked
 
 def draw_audio_detection_toggle(frame, mouse_pos, click_pos):
-    """Dibuja el indicador de detección de audio con icono de volumen a la izquierda."""
+    """Dibuja el indicador de detección de audio."""
     x_text = frame.shape[1] - 40
-    y = 110
+    y = 80
     
-    # Posición del icono (a la izquierda del texto)
-    icon_size = 20
-    icon_x = x_text - 120  # Espacio para el icono antes del texto
-    icon_y = y - icon_size // 2
-    
-    # Dibujar icono de volumen
     if audio_detection_enabled:
-        # Icono sin tachar (activo/transmite audio)
-        frame = draw_volume_icon_unmuted(frame, icon_x, icon_y, icon_size)
         color = (0, 255, 0)
         text = "DET AUDIO: ON"
     else:
-        # Icono tachado (muted)
-        frame = draw_volume_icon_muted(frame, icon_x, icon_y, icon_size)
         color = (0, 0, 255)
         text = "DET AUDIO: OFF"
     
@@ -3419,13 +3443,53 @@ while not stop_program:
             open_tinysa_options_dialog()
             current_click = None
         
-        frame_negro, _ = draw_audio_indicator(frame_negro, current_mouse, current_click)
-        frame_negro, _ = draw_yolo_indicator(frame_negro, current_mouse, current_click)
+        frame_negro, yolo_clicked = draw_yolo_indicator(frame_negro, current_mouse, current_click)
+        if yolo_clicked:
+            def show_no_streaming_yolo():
+                root = Tk()
+                root.withdraw()
+                root.attributes("-topmost", True)
+                messagebox.showwarning("Streaming no detectado", "No se puede iniciar YOLO porque no hay streaming de video disponible.")
+                root.destroy()
+            threading.Thread(target=show_no_streaming_yolo, daemon=True).start()
+            current_click = None
         frame_negro, yolo_settings_clicked = draw_yolo_settings_icon(frame_negro, current_mouse, current_click)
         if yolo_settings_clicked:
             open_yolo_options_dialog()
             current_click = None
-        frame_negro, _ = draw_audio_detection_toggle(frame_negro, current_mouse, current_click)
+        
+        # Icono de volumen de audio
+        frame_negro, volume_icon_clicked = draw_audio_volume_icon(frame_negro, current_mouse, current_click)
+        if volume_icon_clicked:
+            if cap is None:
+                def show_no_streaming():
+                    root = Tk()
+                    root.withdraw()
+                    root.attributes("-topmost", True)
+                    messagebox.showwarning("Streaming no detectado", "No hay streaming de video disponible.")
+                    root.destroy()
+                threading.Thread(target=show_no_streaming, daemon=True).start()
+            else:
+                if audio_enabled: 
+                    stop_audio()
+                else: 
+                    start_audio()
+            current_click = None
+        
+        frame_negro, audio_det_clicked = draw_audio_detection_toggle(frame_negro, current_mouse, current_click)
+        if audio_det_clicked:
+            if audio_enabled:
+                toggle_audio_detection()
+                current_click = None
+            else:
+                def show_activate_audio():
+                    root = Tk()
+                    root.withdraw()
+                    root.attributes("-topmost", True)
+                    messagebox.showinfo("Activar transmisión de audio", "Activa primero la transmisión de sonido pulsando el icono de volumen.")
+                    root.destroy()
+                threading.Thread(target=show_activate_audio, daemon=True).start()
+                current_click = None
 
         process_pending_yolo_reload()
         cap = apply_pending_ip_change(cap)
@@ -3510,16 +3574,39 @@ while not stop_program:
         if tinysa_running:
             frame, current_click = draw_rf_drone_sliders(frame, current_mouse, current_click)
 
-        # 1. Audio
-        frame, audio_clicked = draw_audio_indicator(frame, current_mouse, current_click)
-        if audio_clicked:
-            if audio_enabled: stop_audio()
-            else: start_audio()
+        # 1. Icono de volumen de audio
+        frame, volume_icon_clicked = draw_audio_volume_icon(frame, current_mouse, current_click)
+        if volume_icon_clicked:
+            # Verificar si hay streaming
+            if cap is None:
+                def show_no_streaming():
+                    root = Tk()
+                    root.withdraw()
+                    root.attributes("-topmost", True)
+                    messagebox.showwarning("Streaming no detectado", "No hay streaming de video disponible.")
+                    root.destroy()
+                threading.Thread(target=show_no_streaming, daemon=True).start()
+            else:
+                if audio_enabled: 
+                    stop_audio()
+                else: 
+                    start_audio()
+            current_click = None
             
         # 2. YOLO
         frame, yolo_clicked = draw_yolo_indicator(frame, current_mouse, current_click, detecciones_count)
         if yolo_clicked:
-            toggle_yolo()
+            if cap is None:
+                def show_no_streaming_yolo():
+                    root = Tk()
+                    root.withdraw()
+                    root.attributes("-topmost", True)
+                    messagebox.showwarning("Streaming no detectado", "No se puede iniciar YOLO porque no hay streaming de video disponible.")
+                    root.destroy()
+                threading.Thread(target=show_no_streaming_yolo, daemon=True).start()
+                current_click = None
+            else:
+                toggle_yolo()
         frame, yolo_settings_clicked = draw_yolo_settings_icon(frame, current_mouse, current_click)
         if yolo_settings_clicked:
             open_yolo_options_dialog()
@@ -3539,9 +3626,16 @@ while not stop_program:
         if audio_det_clicked:
             if audio_enabled:
                 toggle_audio_detection()
+                current_click = None
             else:
-                print("Activa el audio (botón AUDIO) antes de habilitar la detección.")
-                click_event_pos = None
+                def show_activate_audio():
+                    root = Tk()
+                    root.withdraw()
+                    root.attributes("-topmost", True)
+                    messagebox.showinfo("Activar transmisión de audio", "Activa primero la transmisión de sonido pulsando el icono de volumen.")
+                    root.destroy()
+                threading.Thread(target=show_activate_audio, daemon=True).start()
+                current_click = None
 
         # 5. IP
         frame, _ = draw_ip_indicator(frame, current_mouse, current_click)
@@ -3577,7 +3671,16 @@ while not stop_program:
         elif key == ord('a') or key == ord('A'):
             toggle_audio_detection()
         elif key == ord('y') or key == ord('Y'):
-            toggle_yolo()
+            if cap is None:
+                def show_no_streaming_yolo_key():
+                    root = Tk()
+                    root.withdraw()
+                    root.attributes("-topmost", True)
+                    messagebox.showwarning("Streaming no detectado", "No se puede iniciar YOLO porque no hay streaming de video disponible.")
+                    root.destroy()
+                threading.Thread(target=show_no_streaming_yolo_key, daemon=True).start()
+            else:
+                toggle_yolo()
         elif key == ord('t') or key == ord('T'): 
             toggle_tinysa()
         elif key == ord('r') or key == ord('R'):
