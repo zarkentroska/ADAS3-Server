@@ -12,18 +12,6 @@ Este proyecto está dividido en tres repositorios:
 - **[ADAS3 Client](https://github.com/zarkentroska/ADAS3-Client)** - Código fuente del cliente
 - **[ADAS3 Releases](https://github.com/zarkentroska/adas3)** - Ejecutables compilados para todas las plataformas
 
-## Actualizar el repositorio
-
-Cada vez que modifiques archivos y quieras actualizar GitHub, ejecuta:
-
-```bash
-git add .
-git commit -m "Descripción de los cambios"
-git push
-```
-
-O usa el script helper: `./actualizar_github.sh "Descripción de los cambios"`
-
 ## Estructura del Proyecto
 
 - `testcam.py` - Script principal
