@@ -4,40 +4,14 @@ Sistema de detección de drones con análisis de audio y video.
 
 **Versión: v0.5 Alpha**
 
-## Configuración del Repositorio GitHub
+## Repositorios del Proyecto ADAS3
 
-### Paso 1: Crear el repositorio en GitHub
+Este proyecto está dividido en dos repositorios:
 
-1. Ve a [GitHub](https://github.com) e inicia sesión
-2. Haz clic en el botón "+" en la esquina superior derecha y selecciona "New repository"
-3. Nombra el repositorio (por ejemplo: `adas3`)
-4. **NO** inicialices con README, .gitignore o licencia (ya los tenemos localmente)
-5. Haz clic en "Create repository"
+- **[ADAS3 Server](https://github.com/zarkentroska/ADAS3-Server)** (este repositorio) - Servidor del sistema
+- **[ADAS3 Client](https://github.com/zarkentroska/ADAS3-Client)** - Cliente del sistema
 
-### Paso 2: Conectar el repositorio local con GitHub
-
-El repositorio ya está configurado. Para hacer el push inicial, necesitas autenticarte:
-
-**Opción A: Usar Token de Acceso Personal (Recomendado)**
-
-1. Ve a GitHub → Settings → Developer settings → Personal access tokens → Tokens (classic)
-2. Genera un nuevo token con permisos `repo`
-3. Copia el token
-4. Ejecuta:
-```bash
-git push -u origin main
-```
-Cuando te pida usuario, ingresa tu usuario de GitHub. Cuando te pida contraseña, pega el token (no tu contraseña de GitHub).
-
-**Opción B: Configurar credenciales guardadas**
-
-```bash
-git config --global credential.helper store
-git push -u origin main
-```
-(Te pedirá usuario y token una vez, luego se guardará)
-
-### Paso 3: Actualizar el repositorio cuando hagas cambios
+## Actualizar el repositorio
 
 Cada vez que modifiques archivos y quieras actualizar GitHub, ejecuta:
 
