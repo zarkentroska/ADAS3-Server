@@ -30,6 +30,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # Rutas absolutas a los recursos
 CONFIG_FILE = os.path.join(BASE_DIR, "config_camara.json")
+LANGUAGE_CONFIG_FILE = os.path.join(BASE_DIR, "language_config.json")
 AUDIO_MODEL_PATH = os.path.join(BASE_DIR, "drone_audio_model.h5")
 YOLO_DEFAULT_MODEL = os.path.join(BASE_DIR, "best.pt")
 YOLO_MODELS_CONFIG = os.path.join(BASE_DIR, "yolo_models_config.json")
@@ -200,6 +201,424 @@ def guardar_ip(ip):
     except Exception as e:
         print(f"Error al guardar IP: {e}")
 
+# --- SISTEMA DE TRADUCCIONES ---
+# Diccionario de traducciones
+TRANSLATIONS = {
+    'es': {  # Spanish (default)
+        'yolo_on': 'YOLO: {0} det.',
+        'yolo_off': 'YOLO: OFF',
+        'tinysa_on': 'TinySA: ON',
+        'tinysa_off': 'TinySA: OFF',
+        'det_audio_on': 'DET AUDIO: ON',
+        'det_audio_off': 'DET AUDIO: OFF',
+        'ip_label': 'IP: {0}',
+        'fps_label': 'FPS: {0:.1f}',
+        'language_app': 'IDIOMA APP',
+        'no_streaming': 'Streaming no detectado',
+        'no_streaming_yolo': 'No se puede iniciar YOLO porque no hay streaming de video disponible.',
+        'activate_audio_first': 'Activa primero la transmisión de sonido pulsando el icono de volumen.',
+        'activate_audio_title': 'Activar transmisión de audio',
+        'no_signal': 'SIN SEÑAL',
+        'reconnecting': 'Intentando reconectar...',
+        'audio_drone_detected': 'AUDIO DRON DETECTED: {0}%',
+        'no_audio_dron': 'NO AUDIO DRON: {0}%',
+        'rf_drone_detected': 'DRON DETECTADO POR RF: {0:.3f} GHz ({1}%)',
+        'rf_drone_detected_no_freq': 'DRON DETECTADO POR RF ({0}%)',
+        'tinysa_connected': 'TinySA conectado',
+        'tinysa_connected_android': 'TinySA conectado a Android',
+        'adb_connected': 'ADB conectado',
+    },
+    'en': {  # English
+        'yolo_on': 'YOLO: {0} det.',
+        'yolo_off': 'YOLO: OFF',
+        'tinysa_on': 'TinySA: ON',
+        'tinysa_off': 'TinySA: OFF',
+        'det_audio_on': 'AUDIO DET: ON',
+        'det_audio_off': 'AUDIO DET: OFF',
+        'ip_label': 'IP: {0}',
+        'fps_label': 'FPS: {0:.1f}',
+        'language_app': 'APP LANGUAGE',
+        'no_streaming': 'Streaming not detected',
+        'no_streaming_yolo': 'Cannot start YOLO because there is no video streaming available.',
+        'activate_audio_first': 'Activate audio transmission first by clicking the volume icon.',
+        'activate_audio_title': 'Activate audio transmission',
+        'no_signal': 'NO SIGNAL',
+        'reconnecting': 'Trying to reconnect...',
+        'audio_drone_detected': 'AUDIO DRONE DETECTED: {0}%',
+        'no_audio_dron': 'NO AUDIO DRONE: {0}%',
+        'rf_drone_detected': 'DRONE DETECTED BY RF: {0:.3f} GHz ({1}%)',
+        'rf_drone_detected_no_freq': 'DRONE DETECTED BY RF ({0}%)',
+        'tinysa_connected': 'TinySA connected',
+        'tinysa_connected_android': 'TinySA connected to Android',
+        'adb_connected': 'ADB connected',
+        'tinysa_not_configured': 'TinySA not configured',
+        'configure_tinysa_first': 'Configure TinySA first using the gear button.',
+        'tinysa_not_detected': 'TinySA not detected locally or on Android server.\nConnect it via USB to PC or Android and try again.',
+        'change_camera_ip': 'Change Camera IP',
+        'enter_new_ip': 'Enter new IP and port:\n(current: {0})',
+        'yolo_options_title': 'YOLO Options',
+        'available_models': 'Available Models',
+        'model': 'Model {0}',
+        'description': 'Description:',
+        'browse': 'Browse',
+        'select_yolo_model': 'Select YOLO Model',
+        'yolo_models': 'YOLO Models (*.pt)',
+        'all_files': 'All Files',
+        'page': 'Page {0}/{1}',
+        'load_model': 'Load Model',
+        'load_and_save_default': 'Load and Save as Default',
+        'load_default_config': 'Load Default Configuration',
+        'cancel': 'Cancel',
+        'model_updated': 'Model updated successfully.',
+        'error': 'Error',
+        'model_empty': 'Model in slot {0} is empty.',
+        'file_not_found': 'File not found:\n{0}',
+        'tinysa_mode_selection': 'TinySA - Mode Selection',
+        'select_mode': 'Select a mode:',
+        'fpv_normal': 'FPV-Normal (2.442 GHz)',
+        'fpv_alt': 'FPV-Alt (5.8 GHz)',
+        'fpv_mix': 'FPV Mix (2.4 and 5.8 GHz sequential)',
+        'custom_range': 'Custom Range',
+        'start_mhz': 'Start (MHz):',
+        'stop_mhz': 'Stop (MHz):',
+        'advanced_range': 'Custom Range - Advanced Interval',
+        'ok': 'OK',
+        'advanced_interval_title': 'Custom Range - Advanced Interval',
+        'up_to_5_intervals': 'Up to 5 intervals (MHz)',
+        'interval': 'Interval {0}:',
+        'start': 'Start',
+        'stop': 'Stop',
+        'sweeps': '# sweeps',
+        'complete_start_end': 'Complete start and end for interval {0}.',
+        'invalid_values': 'Invalid values in interval {0}.',
+        'end_must_be_greater': 'End must be greater than start in interval {0}.',
+        'sweeps_must_be_positive': 'Number of sweeps must be greater than zero (interval {0}).',
+        'enter_valid_interval': 'Enter at least one valid interval.',
+        'enter_numeric_values': 'Enter valid numeric values for start and end.',
+        'end_greater_than_start': 'End must be greater than start.',
+        'language_selection_title': 'Select Language',
+        'select_language': 'Select a language:',
+        'could_not_save_language': 'Could not save language.',
+    },
+    'fr': {  # French
+        'yolo_on': 'YOLO: {0} dét.',
+        'yolo_off': 'YOLO: OFF',
+        'tinysa_on': 'TinySA: ON',
+        'tinysa_off': 'TinySA: OFF',
+        'det_audio_on': 'DET AUDIO: ON',
+        'det_audio_off': 'DET AUDIO: OFF',
+        'ip_label': 'IP: {0}',
+        'fps_label': 'FPS: {0:.1f}',
+        'language_app': 'LANGUE APP',
+        'no_streaming': 'Streaming non détecté',
+        'no_streaming_yolo': 'Impossible de démarrer YOLO car aucun streaming vidéo n\'est disponible.',
+        'activate_audio_first': 'Activez d\'abord la transmission audio en cliquant sur l\'icône de volume.',
+        'activate_audio_title': 'Activer la transmission audio',
+        'no_signal': 'PAS DE SIGNAL',
+        'reconnecting': 'Tentative de reconnexion...',
+        'audio_drone_detected': 'DRONE AUDIO DÉTECTÉ: {0}%',
+        'no_audio_dron': 'PAS DE DRONE AUDIO: {0}%',
+        'rf_drone_detected': 'DRONE DÉTECTÉ PAR RF: {0:.3f} GHz ({1}%)',
+        'rf_drone_detected_no_freq': 'DRONE DÉTECTÉ PAR RF ({0}%)',
+        'tinysa_connected': 'TinySA connecté',
+        'tinysa_connected_android': 'TinySA connecté à Android',
+        'adb_connected': 'ADB connecté',
+        'tinysa_not_configured': 'TinySA non configuré',
+        'configure_tinysa_first': 'Configurez d\'abord TinySA en utilisant le bouton d\'engrenage.',
+        'tinysa_not_detected': 'TinySA non détecté localement ni sur le serveur Android.\nConnectez-le via USB au PC ou à Android et réessayez.',
+        'change_camera_ip': 'Changer IP Caméra',
+        'enter_new_ip': 'Entrez le nouvel IP et port:\n(actuel: {0})',
+        'yolo_options_title': 'Options YOLO',
+        'available_models': 'Modèles disponibles',
+        'model': 'Modèle {0}',
+        'description': 'Description:',
+        'browse': 'Parcourir',
+        'select_yolo_model': 'Sélectionner modèle YOLO',
+        'yolo_models': 'Modèles YOLO (*.pt)',
+        'all_files': 'Tous les fichiers',
+        'page': 'Page {0}/{1}',
+        'load_model': 'Charger modèle',
+        'load_and_save_default': 'Charger et enregistrer par défaut',
+        'load_default_config': 'Charger configuration par défaut',
+        'cancel': 'Annuler',
+        'model_updated': 'Modèle mis à jour avec succès.',
+        'error': 'Erreur',
+        'model_empty': 'Le modèle dans l\'emplacement {0} est vide.',
+        'file_not_found': 'Fichier non trouvé:\n{0}',
+        'tinysa_mode_selection': 'TinySA - Sélection de mode',
+        'select_mode': 'Sélectionnez un mode:',
+        'fpv_normal': 'FPV-Normal (2.442 GHz)',
+        'fpv_alt': 'FPV-Alt (5.8 GHz)',
+        'fpv_mix': 'FPV Mix (2.4 et 5.8 GHz séquentiel)',
+        'custom_range': 'Plage personnalisée',
+        'start_mhz': 'Début (MHz):',
+        'stop_mhz': 'Fin (MHz):',
+        'advanced_range': 'Plage personnalisée - Intervalle avancé',
+        'ok': 'OK',
+        'advanced_interval_title': 'Plage personnalisée - Intervalle avancé',
+        'up_to_5_intervals': 'Jusqu\'à 5 intervalles (MHz)',
+        'interval': 'Intervalle {0}:',
+        'start': 'Début',
+        'stop': 'Fin',
+        'sweeps': '# balayages',
+        'complete_start_end': 'Complétez début et fin pour l\'intervalle {0}.',
+        'invalid_values': 'Valeurs invalides dans l\'intervalle {0}.',
+        'end_must_be_greater': 'La fin doit être supérieure au début dans l\'intervalle {0}.',
+        'sweeps_must_be_positive': 'Le nombre de balayages doit être supérieur à zéro (intervalle {0}).',
+        'enter_valid_interval': 'Entrez au moins un intervalle valide.',
+        'enter_numeric_values': 'Entrez des valeurs numériques valides pour début et fin.',
+        'end_greater_than_start': 'La fin doit être supérieure au début.',
+        'language_selection_title': 'Sélectionner Langue',
+        'select_language': 'Sélectionnez une langue:',
+        'could_not_save_language': 'Impossible d\'enregistrer la langue.',
+    },
+    'it': {  # Italian
+        'yolo_on': 'YOLO: {0} rilev.',
+        'yolo_off': 'YOLO: OFF',
+        'tinysa_on': 'TinySA: ON',
+        'tinysa_off': 'TinySA: OFF',
+        'det_audio_on': 'RIL AUDIO: ON',
+        'det_audio_off': 'RIL AUDIO: OFF',
+        'ip_label': 'IP: {0}',
+        'fps_label': 'FPS: {0:.1f}',
+        'language_app': 'LINGUA APP',
+        'no_streaming': 'Streaming non rilevato',
+        'no_streaming_yolo': 'Impossibile avviare YOLO perché non è disponibile alcuno streaming video.',
+        'activate_audio_first': 'Attiva prima la trasmissione audio cliccando sull\'icona del volume.',
+        'activate_audio_title': 'Attiva trasmissione audio',
+        'no_signal': 'NESSUN SEGNALE',
+        'reconnecting': 'Tentativo di riconnessione...',
+        'audio_drone_detected': 'DRONE AUDIO RILEVATO: {0}%',
+        'no_audio_dron': 'NESSUN DRONE AUDIO: {0}%',
+        'rf_drone_detected': 'DRONE RILEVATO DA RF: {0:.3f} GHz ({1}%)',
+        'rf_drone_detected_no_freq': 'DRONE RILEVATO DA RF ({0}%)',
+        'tinysa_connected': 'TinySA connesso',
+        'tinysa_connected_android': 'TinySA connesso ad Android',
+        'adb_connected': 'ADB connesso',
+        'tinysa_not_configured': 'TinySA non configurato',
+        'configure_tinysa_first': 'Configura prima TinySA usando il pulsante ingranaggio.',
+        'tinysa_not_detected': 'TinySA non rilevato localmente né sul server Android.\nCollegalo via USB al PC o ad Android e riprova.',
+        'change_camera_ip': 'Cambia IP Camera',
+        'enter_new_ip': 'Inserisci nuovo IP e porta:\n(attuale: {0})',
+        'yolo_options_title': 'Opzioni YOLO',
+        'available_models': 'Modelli disponibili',
+        'model': 'Modello {0}',
+        'description': 'Descrizione:',
+        'browse': 'Sfoglia',
+        'select_yolo_model': 'Seleziona modello YOLO',
+        'yolo_models': 'Modelli YOLO (*.pt)',
+        'all_files': 'Tutti i file',
+        'page': 'Pagina {0}/{1}',
+        'load_model': 'Carica modello',
+        'load_and_save_default': 'Carica e salva come predefinito',
+        'load_default_config': 'Carica configurazione predefinita',
+        'cancel': 'Annulla',
+        'model_updated': 'Modello aggiornato correttamente.',
+        'error': 'Errore',
+        'model_empty': 'Il modello nello slot {0} è vuoto.',
+        'file_not_found': 'File non trovato:\n{0}',
+        'tinysa_mode_selection': 'TinySA - Selezione modalità',
+        'select_mode': 'Seleziona una modalità:',
+        'fpv_normal': 'FPV-Normale (2.442 GHz)',
+        'fpv_alt': 'FPV-Alt (5.8 GHz)',
+        'fpv_mix': 'FPV Mix (2.4 e 5.8 GHz sequenziale)',
+        'custom_range': 'Intervallo personalizzato',
+        'start_mhz': 'Inizio (MHz):',
+        'stop_mhz': 'Fine (MHz):',
+        'advanced_range': 'Intervallo personalizzato - Intervallo avanzato',
+        'ok': 'OK',
+        'advanced_interval_title': 'Intervallo personalizzato - Intervallo avanzato',
+        'up_to_5_intervals': 'Fino a 5 intervalli (MHz)',
+        'interval': 'Intervallo {0}:',
+        'start': 'Inizio',
+        'stop': 'Fine',
+        'sweeps': '# scansioni',
+        'complete_start_end': 'Completa inizio e fine per l\'intervallo {0}.',
+        'invalid_values': 'Valori non validi nell\'intervallo {0}.',
+        'end_must_be_greater': 'La fine deve essere maggiore dell\'inizio nell\'intervallo {0}.',
+        'sweeps_must_be_positive': 'Il numero di scansioni deve essere maggiore di zero (intervallo {0}).',
+        'enter_valid_interval': 'Inserisci almeno un intervallo valido.',
+        'enter_numeric_values': 'Inserisci valori numerici validi per inizio e fine.',
+        'end_greater_than_start': 'La fine deve essere maggiore dell\'inizio.',
+        'language_selection_title': 'Seleziona Lingua',
+        'select_language': 'Seleziona una lingua:',
+        'could_not_save_language': 'Impossibile salvare la lingua.',
+    },
+    'pt': {  # Portuguese
+        'yolo_on': 'YOLO: {0} det.',
+        'yolo_off': 'YOLO: OFF',
+        'tinysa_on': 'TinySA: ON',
+        'tinysa_off': 'TinySA: OFF',
+        'det_audio_on': 'DET ÁUDIO: ON',
+        'det_audio_off': 'DET ÁUDIO: OFF',
+        'ip_label': 'IP: {0}',
+        'fps_label': 'FPS: {0:.1f}',
+        'language_app': 'IDIOMA APP',
+        'no_streaming': 'Streaming não detectado',
+        'no_streaming_yolo': 'Não é possível iniciar YOLO porque não há streaming de vídeo disponível.',
+        'activate_audio_first': 'Ative primeiro a transmissão de áudio clicando no ícone de volume.',
+        'activate_audio_title': 'Ativar transmissão de áudio',
+        'no_signal': 'SEM SINAL',
+        'reconnecting': 'Tentando reconectar...',
+        'audio_drone_detected': 'DRONE DE ÁUDIO DETECTADO: {0}%',
+        'no_audio_dron': 'NENHUM DRONE DE ÁUDIO: {0}%',
+        'rf_drone_detected': 'DRONE DETECTADO POR RF: {0:.3f} GHz ({1}%)',
+        'rf_drone_detected_no_freq': 'DRONE DETECTADO POR RF ({0}%)',
+        'tinysa_connected': 'TinySA conectado',
+        'tinysa_connected_android': 'TinySA conectado ao Android',
+        'adb_connected': 'ADB conectado',
+        'tinysa_not_configured': 'TinySA não configurado',
+        'configure_tinysa_first': 'Configure TinySA primeiro usando o botão de engrenagem.',
+        'tinysa_not_detected': 'TinySA não detectado localmente nem no servidor Android.\nConecte-o via USB ao PC ou ao Android e tente novamente.',
+        'change_camera_ip': 'Alterar IP da Câmera',
+        'enter_new_ip': 'Digite o novo IP e porta:\n(atual: {0})',
+        'yolo_options_title': 'Opções YOLO',
+        'available_models': 'Modelos Disponíveis',
+        'model': 'Modelo {0}',
+        'description': 'Descrição:',
+        'browse': 'Procurar',
+        'select_yolo_model': 'Selecionar Modelo YOLO',
+        'yolo_models': 'Modelos YOLO (*.pt)',
+        'all_files': 'Todos os Arquivos',
+        'page': 'Página {0}/{1}',
+        'load_model': 'Carregar Modelo',
+        'load_and_save_default': 'Carregar e Salvar como Padrão',
+        'load_default_config': 'Carregar Configuração Padrão',
+        'cancel': 'Cancelar',
+        'model_updated': 'Modelo atualizado com sucesso.',
+        'error': 'Erro',
+        'model_empty': 'O modelo no slot {0} está vazio.',
+        'file_not_found': 'Arquivo não encontrado:\n{0}',
+        'tinysa_mode_selection': 'TinySA - Seleção de Modo',
+        'select_mode': 'Selecione um modo:',
+        'fpv_normal': 'FPV-Normal (2.442 GHz)',
+        'fpv_alt': 'FPV-Alt (5.8 GHz)',
+        'fpv_mix': 'FPV Mix (2.4 e 5.8 GHz sequencial)',
+        'custom_range': 'Intervalo Personalizado',
+        'start_mhz': 'Início (MHz):',
+        'stop_mhz': 'Fim (MHz):',
+        'advanced_range': 'Intervalo Personalizado - Intervalo Avançado',
+        'ok': 'OK',
+        'advanced_interval_title': 'Intervalo Personalizado - Intervalo Avançado',
+        'up_to_5_intervals': 'Até 5 intervalos (MHz)',
+        'interval': 'Intervalo {0}:',
+        'start': 'Início',
+        'stop': 'Fim',
+        'sweeps': '# varreduras',
+        'complete_start_end': 'Complete início e fim para o intervalo {0}.',
+        'invalid_values': 'Valores inválidos no intervalo {0}.',
+        'end_must_be_greater': 'O fim deve ser maior que o início no intervalo {0}.',
+        'sweeps_must_be_positive': 'O número de varreduras deve ser maior que zero (intervalo {0}).',
+        'enter_valid_interval': 'Digite pelo menos um intervalo válido.',
+        'enter_numeric_values': 'Digite valores numéricos válidos para início e fim.',
+        'end_greater_than_start': 'O fim deve ser maior que o início.',
+        'language_selection_title': 'Selecionar Idioma',
+        'select_language': 'Selecione um idioma:',
+        'could_not_save_language': 'Não foi possível salvar o idioma.',
+    }
+}
+
+# Idioma actual (por defecto: español)
+current_language = 'es'
+
+def cargar_idioma():
+    """Carga el idioma guardado o retorna el por defecto (español)"""
+    global current_language
+    if os.path.exists(LANGUAGE_CONFIG_FILE):
+        try:
+            with open(LANGUAGE_CONFIG_FILE, 'r', encoding='utf-8') as f:
+                config = json.load(f)
+                lang = config.get('language', 'es')
+                if lang in TRANSLATIONS:
+                    current_language = lang
+                    return lang
+        except Exception as e:
+            print(f"Error al cargar idioma: {e}")
+    current_language = 'es'
+    return 'es'
+
+def guardar_idioma(lang):
+    """Guarda el idioma seleccionado"""
+    global current_language
+    try:
+        with open(LANGUAGE_CONFIG_FILE, 'w', encoding='utf-8') as f:
+            json.dump({'language': lang}, f, ensure_ascii=False, indent=2)
+        current_language = lang
+        return True
+    except Exception as e:
+        print(f"Error al guardar idioma: {e}")
+        return False
+
+def t(key, *args):
+    """Obtiene la traducción de una clave. Soporta formato con argumentos."""
+    global current_language
+    translation = TRANSLATIONS.get(current_language, TRANSLATIONS['es']).get(key, key)
+    if args:
+        try:
+            return translation.format(*args)
+        except:
+            return translation
+    return translation
+
+def show_language_selection_dialog():
+    """Muestra el diálogo para seleccionar idioma."""
+    root = tk.Tk()
+    root.title(t('language_selection_title'))
+    root.attributes("-topmost", True)
+    root.resizable(False, False)
+    
+    main_frame = ttk.Frame(root, padding=20)
+    main_frame.pack(fill="both", expand=True)
+    
+    ttk.Label(main_frame, text=t('select_language'), 
+              font=("Arial", 11, "bold")).pack(anchor="w", pady=(0, 15))
+    
+    languages = [
+        ('es', 'Español'),
+        ('en', 'English'),
+        ('fr', 'Français'),
+        ('it', 'Italiano'),
+        ('pt', 'Português')
+    ]
+    
+    selected_lang = tk.StringVar(value=current_language)
+    
+    for lang_code, lang_name in languages:
+        ttk.Radiobutton(main_frame, text=lang_name, variable=selected_lang, 
+                       value=lang_code).pack(anchor="w", pady=5)
+    
+    result = {"selected": None}
+    
+    def on_ok():
+        result["selected"] = selected_lang.get()
+        if guardar_idioma(result["selected"]):
+            root.destroy()
+        else:
+            messagebox.showerror(t('error'), t('could_not_save_language'))
+    
+    def on_cancel():
+        result["selected"] = None
+        root.destroy()
+    
+    btn_frame = ttk.Frame(main_frame)
+    btn_frame.pack(fill="x", pady=(15, 0))
+    
+    ttk.Button(btn_frame, text=t('ok'), command=on_ok, width=12).pack(side="left", padx=5)
+    ttk.Button(btn_frame, text=t('cancel'), command=on_cancel, width=12).pack(side="left", padx=5)
+    
+    root.mainloop()
+    return result["selected"]
+
+def draw_language_indicator(frame, mouse_pos, click_pos):
+    """Dibuja el indicador de idioma."""
+    x = frame.shape[1] - 40
+    y = 110  # Debajo de DET AUDIO (y=80) + 30 píxeles
+    
+    text = t('language_app')
+    color = (255, 255, 255)  # Blanco
+    
+    return draw_interactive_button(frame, text, x, y, 0, 0, color, mouse_pos, click_pos, align_right=True)
+
 def solicitar_nueva_ip(ip_actual):
     """Muestra diálogo para cambiar la IP"""
     root = Tk()
@@ -207,8 +626,8 @@ def solicitar_nueva_ip(ip_actual):
     root.attributes('-topmost', True)
     
     nueva_ip = simpledialog.askstring(
-        "Cambiar Cámara IP",
-        f"Introduce la nueva IP y puerto:\n(actual: {ip_actual})",
+        t('change_camera_ip'),
+        t('enter_new_ip', ip_actual),
         initialvalue=ip_actual
     )
     
@@ -224,6 +643,9 @@ base_url = f"http://{ip_y_puerto}"
 video_url = base_url + "/video"
 audio_url = base_url + "/audio.wav"
 window_name = 'ADAS3 Server'
+
+# Cargar idioma al inicio
+cargar_idioma()
 
 print(f"Iniciando con IP guardada: {base_url}")
 
@@ -390,7 +812,7 @@ def build_tinysa_sequence(selection, custom_data=None, advanced_ranges=None):
 def show_advanced_interval_dialog(parent):
     """Diálogo para configurar hasta 5 intervalos personalizados."""
     dialog = tk.Toplevel(parent)
-    dialog.title("Rango personalizado - Intervalo avanzado")
+    dialog.title(t('advanced_interval_title'))
     dialog.attributes("-topmost", True)
     dialog.resizable(False, False)
     dialog.transient(parent)
@@ -401,21 +823,21 @@ def show_advanced_interval_dialog(parent):
     frame = ttk.Frame(dialog, padding=10)
     frame.pack(fill="both", expand=True)
 
-    ttk.Label(frame, text="Hasta 5 intervalos (MHz)").grid(row=0, column=0, columnspan=5, pady=(0, 10))
+    ttk.Label(frame, text=t('up_to_5_intervals')).grid(row=0, column=0, columnspan=5, pady=(0, 10))
 
     entries = []
     for i in range(5):
         start_var = tk.StringVar()
         stop_var = tk.StringVar()
         sweeps_var = tk.StringVar(value=str(TIN_YSA_SWEEPS_PER_RANGE))
-        ttk.Label(frame, text=f"Intervalo {i + 1}:").grid(row=i + 1, column=0, sticky="w", padx=(0, 10))
-        ttk.Label(frame, text="Inicio").grid(row=i + 1, column=1, sticky="e")
+        ttk.Label(frame, text=t('interval', i + 1)).grid(row=i + 1, column=0, sticky="w", padx=(0, 10))
+        ttk.Label(frame, text=t('start')).grid(row=i + 1, column=1, sticky="e")
         start_entry = ttk.Entry(frame, textvariable=start_var, width=10)
         start_entry.grid(row=i + 1, column=2, padx=5, pady=2)
-        ttk.Label(frame, text="Fin").grid(row=i + 1, column=3, sticky="e")
+        ttk.Label(frame, text=t('stop')).grid(row=i + 1, column=3, sticky="e")
         stop_entry = ttk.Entry(frame, textvariable=stop_var, width=10)
         stop_entry.grid(row=i + 1, column=4, padx=5, pady=2)
-        ttk.Label(frame, text="# barridos").grid(row=i + 1, column=5, sticky="e")
+        ttk.Label(frame, text=t('sweeps')).grid(row=i + 1, column=5, sticky="e")
         sweeps_entry = ttk.Entry(frame, textvariable=sweeps_var, width=6)
         sweeps_entry.grid(row=i + 1, column=6, padx=5, pady=2)
         entries.append((start_var, stop_var, sweeps_var))
@@ -436,25 +858,25 @@ def show_advanced_interval_dialog(parent):
             if not start_text and not stop_text:
                 continue
             if not start_text or not stop_text:
-                messagebox.showerror("Error", f"Completa inicio y fin para el intervalo {idx}.")
+                messagebox.showerror(t('error'), t('complete_start_end', idx))
                 return
             try:
                 start_val = float(start_text)
                 stop_val = float(stop_text)
                 sweeps_val = int(sweeps_var.get().strip())
             except ValueError:
-                messagebox.showerror("Error", f"Valores inválidos en intervalo {idx}.")
+                messagebox.showerror(t('error'), t('invalid_values', idx))
                 return
             if stop_val <= start_val:
-                messagebox.showerror("Error", f"El fin debe ser mayor que el inicio en el intervalo {idx}.")
+                messagebox.showerror(t('error'), t('end_must_be_greater', idx))
                 return
             if sweeps_val <= 0:
-                messagebox.showerror("Error", f"El número de barridos debe ser mayor a cero (intervalo {idx}).")
+                messagebox.showerror(t('error'), t('sweeps_must_be_positive', idx))
                 return
             ranges.append((start_val, stop_val, sweeps_val))
 
         if not ranges:
-            messagebox.showerror("Error", "Introduce al menos un intervalo válido.")
+            messagebox.showerror(t('error'), t('enter_valid_interval'))
             return
 
         result["ranges"] = ranges
@@ -478,8 +900,8 @@ def show_advanced_interval_dialog(parent):
 
     btn_frame = ttk.Frame(frame)
     btn_frame.grid(row=7, column=0, columnspan=5, pady=(15, 0))
-    ttk.Button(btn_frame, text="OK", command=on_ok, width=12).pack(side="left", padx=5)
-    ttk.Button(btn_frame, text="Cancelar", command=on_cancel, width=12).pack(side="left", padx=5)
+    ttk.Button(btn_frame, text=t('ok'), command=on_ok, width=12).pack(side="left", padx=5)
+    ttk.Button(btn_frame, text=t('cancel'), command=on_cancel, width=12).pack(side="left", padx=5)
 
     dialog.wait_window()
     return result["ranges"]
@@ -488,7 +910,7 @@ def show_advanced_interval_dialog(parent):
 def show_tinysa_menu():
     """Muestra el selector gráfico para TinySA."""
     root = tk.Tk()
-    root.title("TinySA - Selección de modo")
+    root.title(t('tinysa_mode_selection'))
     root.attributes("-topmost", True)
     root.resizable(False, False)
 
@@ -510,27 +932,27 @@ def show_tinysa_menu():
     custom_start = tk.StringVar()
     custom_stop = tk.StringVar()
 
-    ttk.Label(main_frame, text="Selecciona un modo:", font=("Arial", 11, "bold")).pack(anchor="w")
+    ttk.Label(main_frame, text=t('select_mode'), font=("Arial", 11, "bold")).pack(anchor="w")
 
     options_frame = ttk.Frame(main_frame)
     options_frame.pack(fill="x", pady=10)
 
     ttk.Radiobutton(
-        options_frame, text="FPV-Normal (2.442 GHz)", variable=selection_var, value="preset1"
+        options_frame, text=t('fpv_normal'), variable=selection_var, value="preset1"
     ).pack(anchor="w", pady=2)
     ttk.Radiobutton(
-        options_frame, text="FPV-Alt (5.8 GHz)", variable=selection_var, value="preset2"
+        options_frame, text=t('fpv_alt'), variable=selection_var, value="preset2"
     ).pack(anchor="w", pady=2)
     ttk.Radiobutton(
         options_frame,
-        text="FPV Mix (2.4 y 5.8 GHz secuencial)",
+        text=t('fpv_mix'),
         variable=selection_var,
         value="mix",
     ).pack(anchor="w", pady=2)
 
     custom_radio = ttk.Radiobutton(
         options_frame,
-        text="Rango personalizado",
+        text=t('custom_range'),
         variable=selection_var,
         value="custom",
     )
@@ -538,16 +960,16 @@ def show_tinysa_menu():
 
     custom_frame = ttk.Frame(options_frame)
     custom_frame.pack(anchor="w", padx=20, pady=(0, 5))
-    ttk.Label(custom_frame, text="Inicio (MHz):").grid(row=0, column=0, sticky="w")
+    ttk.Label(custom_frame, text=t('start_mhz')).grid(row=0, column=0, sticky="w")
     custom_start_entry = ttk.Entry(custom_frame, textvariable=custom_start, width=10, state="disabled")
     custom_start_entry.grid(row=0, column=1, padx=5)
-    ttk.Label(custom_frame, text="Fin (MHz):").grid(row=0, column=2, sticky="w")
+    ttk.Label(custom_frame, text=t('stop_mhz')).grid(row=0, column=2, sticky="w")
     custom_stop_entry = ttk.Entry(custom_frame, textvariable=custom_stop, width=10, state="disabled")
     custom_stop_entry.grid(row=0, column=3, padx=5)
 
     ttk.Radiobutton(
         options_frame,
-        text="Rango personalizado - Intervalo avanzado",
+        text=t('advanced_range'),
         variable=selection_var,
         value="advanced",
     ).pack(anchor="w", pady=2)
@@ -571,10 +993,10 @@ def show_tinysa_menu():
                 start_val = float(custom_start.get())
                 stop_val = float(custom_stop.get())
             except ValueError:
-                messagebox.showerror("Error", "Introduce valores numéricos válidos para inicio y fin.")
+                messagebox.showerror(t('error'), t('enter_numeric_values'))
                 return
             if stop_val <= start_val:
-                messagebox.showerror("Error", "El fin debe ser mayor que el inicio.")
+                messagebox.showerror(t('error'), t('end_greater_than_start'))
                 return
             result["selection"] = sel
             result["custom"] = (start_val, stop_val)
@@ -605,8 +1027,8 @@ def show_tinysa_menu():
 
     btn_frame = ttk.Frame(main_frame)
     btn_frame.pack(fill="x", pady=(10, 0))
-    ttk.Button(btn_frame, text="OK", command=on_ok, width=12).pack(side="left", padx=5)
-    ttk.Button(btn_frame, text="Cancelar", command=on_cancel, width=12).pack(side="left", padx=5)
+    ttk.Button(btn_frame, text=t('ok'), command=on_ok, width=12).pack(side="left", padx=5)
+    ttk.Button(btn_frame, text=t('cancel'), command=on_cancel, width=12).pack(side="left", padx=5)
 
     def on_close():
         result["selection"] = None
@@ -1336,9 +1758,8 @@ def start_tinysa_with_sequence(sequence):
                         root.withdraw()
                         root.attributes("-topmost", True)
                         messagebox.showwarning(
-                            "TinySA no disponible",
-                            "TinySA no detectado localmente ni en el servidor Android.\n"
-                            "Conéctalo vía USB al PC o al Android e intenta de nuevo."
+                            t('tinysa_not_configured'),
+                            t('tinysa_not_detected')
                         )
                         root.destroy()
                     threading.Thread(target=show_warning, daemon=True).start()
@@ -1436,8 +1857,8 @@ def toggle_tinysa():
             root.withdraw()
             root.attributes("-topmost", True)
             messagebox.showinfo(
-                "TinySA no configurado",
-                "Configura TinySA primero usando el botón de engranaje."
+                t('tinysa_not_configured'),
+                t('configure_tinysa_first')
             )
             root.destroy()
         threading.Thread(target=show_message, daemon=True).start()
@@ -2569,10 +2990,10 @@ def draw_yolo_indicator(frame, mouse_pos, click_pos, detecciones=0):
     
     if yolo_enabled:
         color = (0, 255, 0)
-        text = f"YOLO: {detecciones} det."
+        text = t('yolo_on', detecciones)
     else:
         color = (0, 0, 255)
-        text = "YOLO: OFF"
+        text = t('yolo_off')
     
     return draw_interactive_button(frame, text, x, y, 0, 0, color, mouse_pos, click_pos, align_right=True)
 
@@ -2623,10 +3044,10 @@ def draw_tinysa_indicator(frame, mouse_pos, click_pos):
     
     if tinysa_running:
         color = (0, 255, 0)
-        text = "TinySA: ON"
+        text = t('tinysa_on')
     else:
         color = (0, 0, 255)
-        text = "TinySA: OFF"
+        text = t('tinysa_off')
     
     return draw_interactive_button(frame, text, x, y, 0, 0, color, mouse_pos, click_pos, align_right=True)
 
@@ -2723,10 +3144,10 @@ def draw_audio_detection_toggle(frame, mouse_pos, click_pos):
     
     if audio_detection_enabled:
         color = (0, 255, 0)
-        text = "DET AUDIO: ON"
+        text = t('det_audio_on')
     else:
         color = (0, 0, 255)
-        text = "DET AUDIO: OFF"
+        text = t('det_audio_off')
     
     # Dibujar el texto como botón interactivo
     return draw_interactive_button(frame, text, x_text, y, 0, 0, color, mouse_pos, click_pos, align_right=True)
@@ -2751,7 +3172,7 @@ def open_yolo_options_dialog():
 def draw_ip_indicator(frame, mouse_pos, click_pos):
     x = 10
     y = 20
-    text = f"IP: {ip_y_puerto}"
+    text = t('ip_label', ip_y_puerto)
     
     font = cv2.FONT_HERSHEY_SIMPLEX
     font_scale = 0.5
@@ -2779,7 +3200,7 @@ def draw_ip_indicator(frame, mouse_pos, click_pos):
 def draw_adb_message(frame):
     if not adb_connected:
         return frame
-    text = "ADB conectado"
+    text = t('adb_connected')
     font = cv2.FONT_HERSHEY_SIMPLEX
     cv2.putText(frame, text, (10, 85), font, 0.6, (0, 255, 255), 2)
     return frame
@@ -2790,9 +3211,9 @@ def draw_tinysa_message(frame):
         return frame
     # Mostrar mensaje diferente según el modo de conexión
     if tinysa_use_http:
-        text = "TinySA conectado a Android"
+        text = t('tinysa_connected_android')
     else:
-        text = "TinySA conectado"
+        text = t('tinysa_connected')
     font = cv2.FONT_HERSHEY_SIMPLEX
     # Posición abajo a la izquierda
     x = 10
@@ -2809,9 +3230,9 @@ def draw_tinysa_message(frame):
         
         if frequency:
             freq_mhz = frequency / 1e6
-            alert_text = f"DRON DETECTADO POR RF: {freq_mhz:.3f} GHz ({int(confidence * 100)}%)"
+            alert_text = t('rf_drone_detected', freq_mhz, int(confidence * 100))
         else:
-            alert_text = f"DRON DETECTADO POR RF ({int(confidence * 100)}%)"
+            alert_text = t('rf_drone_detected_no_freq', int(confidence * 100))
         
         # Dibujar fondo semitransparente rojo para la alerta
         text_size, _ = cv2.getTextSize(alert_text, font, 0.7, 2)
@@ -3009,14 +3430,14 @@ def show_yolo_options_window():
     global yolo_model_slots, yolo_default_slot
 
     root = tk.Tk()
-    root.title("Opciones de YOLO")
+    root.title(t('yolo_options_title'))
     root.attributes("-topmost", True)
     root.resizable(False, False)
 
     main_frame = ttk.Frame(root, padding=15)
     main_frame.pack(fill="both", expand=True)
 
-    ttk.Label(main_frame, text="Modelos disponibles", font=("Arial", 11, "bold")).pack(anchor="w")
+    ttk.Label(main_frame, text=t('available_models'), font=("Arial", 11, "bold")).pack(anchor="w")
 
     slots_frame = ttk.Frame(main_frame)
     slots_frame.pack(fill="both", expand=True, pady=(10, 15))
@@ -3032,8 +3453,8 @@ def show_yolo_options_window():
 
     def browse_file(idx):
         filepath = filedialog.askopenfilename(
-            title="Seleccionar modelo YOLO",
-            filetypes=[("Modelos YOLO (*.pt)", "*.pt"), ("Todos los archivos", "*.*")],
+            title=t('select_yolo_model'),
+            filetypes=[(t('yolo_models'), "*.pt"), (t('all_files'), "*.*")],
             parent=root
         )
         if filepath:
@@ -3059,11 +3480,11 @@ def show_yolo_options_window():
             frame_slot.pack(fill="x", pady=3)
 
             ttk.Radiobutton(frame_slot, variable=selected_var, value=idx).grid(row=0, column=0, rowspan=2, padx=(0, 8))
-            ttk.Label(frame_slot, text=f"Modelo {idx + 1}").grid(row=0, column=1, sticky="w")
+            ttk.Label(frame_slot, text=t('model', idx + 1)).grid(row=0, column=1, sticky="w")
             entry_path = ttk.Entry(frame_slot, textvariable=path_vars[idx], width=45)
             entry_path.grid(row=0, column=2, padx=5, sticky="we")
-            ttk.Button(frame_slot, text="Examinar", command=lambda i=idx: browse_file(i)).grid(row=0, column=3, padx=5)
-            ttk.Label(frame_slot, text="Descripción:").grid(row=1, column=1, sticky="e", pady=2)
+            ttk.Button(frame_slot, text=t('browse'), command=lambda i=idx: browse_file(i)).grid(row=0, column=3, padx=5)
+            ttk.Label(frame_slot, text=t('description')).grid(row=1, column=1, sticky="e", pady=2)
             ttk.Entry(frame_slot, textvariable=desc_vars[idx], width=45).grid(row=1, column=2, padx=5, sticky="we")
             frame_slot.columnconfigure(2, weight=1)
 
@@ -3073,7 +3494,7 @@ def show_yolo_options_window():
     page_label_var = tk.StringVar()
 
     def update_page_label():
-        page_label_var.set(f"Página {current_page.get() + 1}/{total_pages}")
+        page_label_var.set(t('page', current_page.get() + 1, total_pages))
 
     def go_prev():
         if current_page.get() > 0:
@@ -3115,23 +3536,23 @@ def show_yolo_options_window():
 
         path = yolo_model_slots[slot_idx]["path"]
         if not path:
-            messagebox.showerror("Error", f"El modelo del slot {slot_idx + 1} está vacío.")
+            messagebox.showerror(t('error'), t('model_empty', slot_idx + 1))
             return
         if not os.path.exists(path):
-            messagebox.showerror("Error", f"No se encontró el archivo:\n{path}")
+            messagebox.showerror(t('error'), t('file_not_found', path))
             return
 
         if apply_yolo_model(path, save_default=save_default, selected_slot=slot_idx if save_default else None):
-            status_var.set("Modelo actualizado correctamente.")
+            status_var.set(t('model_updated'))
             root.destroy()
 
     btn_frame = ttk.Frame(main_frame)
     btn_frame.pack(fill="x", pady=(5, 10))
 
-    ttk.Button(btn_frame, text="Cargar modelo", command=lambda: apply_action(False)).pack(side="left", padx=5)
-    ttk.Button(btn_frame, text="Cargar y guardar por defecto", command=lambda: apply_action(True)).pack(side="left", padx=5)
-    ttk.Button(btn_frame, text="Cargar configuración por defecto", command=lambda: apply_action(True, True)).pack(side="left", padx=5)
-    ttk.Button(btn_frame, text="Cancelar", command=root.destroy).pack(side="right", padx=5)
+    ttk.Button(btn_frame, text=t('load_model'), command=lambda: apply_action(False)).pack(side="left", padx=5)
+    ttk.Button(btn_frame, text=t('load_and_save_default'), command=lambda: apply_action(True)).pack(side="left", padx=5)
+    ttk.Button(btn_frame, text=t('load_default_config'), command=lambda: apply_action(True, True)).pack(side="left", padx=5)
+    ttk.Button(btn_frame, text=t('cancel'), command=root.destroy).pack(side="right", padx=5)
 
     ttk.Label(main_frame, textvariable=status_var, foreground="#0077cc").pack(anchor="w")
 
@@ -3318,10 +3739,10 @@ def draw_audio_detection_indicator(frame):
     if is_drone:
         blink = int(time.time() * 2) % 2 == 0
         color = (0, 255, 255) if blink else (0, 128, 128)
-        text = f"AUDIO DRON DETECTED: {int(confidence * 100)}%"
+        text = t('audio_drone_detected', int(confidence * 100))
     else:
         color = (0, 0, 255)
-        text = f"NO AUDIO DRON: {int(confidence * 100)}%"
+        text = t('no_audio_dron', int(confidence * 100))
     
     overlay = frame.copy()
     text_size = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)[0]
@@ -3349,7 +3770,7 @@ def process_pending_yolo_reload():
 def draw_fps_indicator(frame, fps):
     x = 10
     y = 50
-    text = f"FPS: {fps:.1f}"
+    text = t('fps_label', fps)
     
     overlay = frame.copy()
     text_size = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 2)[0]
@@ -3409,8 +3830,8 @@ while not stop_program:
     if cap is None:
         # MOSTRAR PANTALLA DE ESPERA (NO SIGNAL)
         frame_negro = np.zeros((DEFAULT_WINDOW_SIZE[1], DEFAULT_WINDOW_SIZE[0], 3), dtype=np.uint8)
-        texto = "NO SIGNAL"
-        texto2 = "Intentando reconectar..."
+        texto = t('no_signal')
+        texto2 = t('reconnecting')
         
         font = cv2.FONT_HERSHEY_SIMPLEX
         (tw, th), _ = cv2.getTextSize(texto, font, 1.5, 2)
@@ -3449,7 +3870,7 @@ while not stop_program:
                 root = Tk()
                 root.withdraw()
                 root.attributes("-topmost", True)
-                messagebox.showwarning("Streaming no detectado", "No se puede iniciar YOLO porque no hay streaming de video disponible.")
+                messagebox.showwarning(t('no_streaming'), t('no_streaming_yolo'))
                 root.destroy()
             threading.Thread(target=show_no_streaming_yolo, daemon=True).start()
             current_click = None
@@ -3466,7 +3887,7 @@ while not stop_program:
                     root = Tk()
                     root.withdraw()
                     root.attributes("-topmost", True)
-                    messagebox.showwarning("Streaming no detectado", "No hay streaming de video disponible.")
+                    messagebox.showwarning(t('no_streaming'), t('no_streaming'))
                     root.destroy()
                 threading.Thread(target=show_no_streaming, daemon=True).start()
             else:
@@ -3486,10 +3907,18 @@ while not stop_program:
                     root = Tk()
                     root.withdraw()
                     root.attributes("-topmost", True)
-                    messagebox.showinfo("Activar transmisión de audio", "Activa primero la transmisión de sonido pulsando el icono de volumen.")
+                    messagebox.showinfo(t('activate_audio_title'), t('activate_audio_first'))
                     root.destroy()
                 threading.Thread(target=show_activate_audio, daemon=True).start()
                 current_click = None
+        
+        # Idioma APP
+        frame_negro, language_clicked = draw_language_indicator(frame_negro, current_mouse, current_click)
+        if language_clicked:
+            def show_language_dialog():
+                show_language_selection_dialog()
+            threading.Thread(target=show_language_dialog, daemon=True).start()
+            current_click = None
 
         process_pending_yolo_reload()
         cap = apply_pending_ip_change(cap)
@@ -3583,7 +4012,7 @@ while not stop_program:
                     root = Tk()
                     root.withdraw()
                     root.attributes("-topmost", True)
-                    messagebox.showwarning("Streaming no detectado", "No hay streaming de video disponible.")
+                    messagebox.showwarning(t('no_streaming'), t('no_streaming'))
                     root.destroy()
                 threading.Thread(target=show_no_streaming, daemon=True).start()
             else:
@@ -3601,7 +4030,7 @@ while not stop_program:
                     root = Tk()
                     root.withdraw()
                     root.attributes("-topmost", True)
-                    messagebox.showwarning("Streaming no detectado", "No se puede iniciar YOLO porque no hay streaming de video disponible.")
+                    messagebox.showwarning(t('no_streaming'), t('no_streaming_yolo'))
                     root.destroy()
                 threading.Thread(target=show_no_streaming_yolo, daemon=True).start()
                 current_click = None
@@ -3632,12 +4061,20 @@ while not stop_program:
                     root = Tk()
                     root.withdraw()
                     root.attributes("-topmost", True)
-                    messagebox.showinfo("Activar transmisión de audio", "Activa primero la transmisión de sonido pulsando el icono de volumen.")
+                    messagebox.showinfo(t('activate_audio_title'), t('activate_audio_first'))
                     root.destroy()
                 threading.Thread(target=show_activate_audio, daemon=True).start()
                 current_click = None
 
-        # 5. IP
+        # 5. Idioma APP
+        frame, language_clicked = draw_language_indicator(frame, current_mouse, current_click)
+        if language_clicked:
+            def show_language_dialog():
+                show_language_selection_dialog()
+            threading.Thread(target=show_language_dialog, daemon=True).start()
+            current_click = None
+
+        # 6. IP
         frame, _ = draw_ip_indicator(frame, current_mouse, current_click)
         frame = draw_adb_message(frame)
         frame, ip_settings_clicked = draw_ip_settings_icon(frame, current_mouse, current_click)
@@ -3676,7 +4113,7 @@ while not stop_program:
                     root = Tk()
                     root.withdraw()
                     root.attributes("-topmost", True)
-                    messagebox.showwarning("Streaming no detectado", "No se puede iniciar YOLO porque no hay streaming de video disponible.")
+                    messagebox.showwarning(t('no_streaming'), t('no_streaming_yolo'))
                     root.destroy()
                 threading.Thread(target=show_no_streaming_yolo_key, daemon=True).start()
             else:
