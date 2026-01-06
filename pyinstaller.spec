@@ -71,8 +71,69 @@ hiddenimports = [
     "serial.tools.list_ports",
 ]
 
-# No usar collect_submodules para evitar problemas con demasiados módulos
-# PyInstaller debería detectar automáticamente las importaciones necesarias
+# Excluir módulos innecesarios para reducir el tamaño
+excludes = [
+    # CUDA/NVIDIA - excluir si no hay GPU o no se necesita
+    "nvidia",
+    "nvidia.cublas",
+    "nvidia.cuda_cupti",
+    "nvidia.cuda_nvcc",
+    "nvidia.cuda_nvrtc",
+    "nvidia.cuda_runtime",
+    "nvidia.cudnn",
+    "nvidia.cufft",
+    "nvidia.curand",
+    "nvidia.cusolver",
+    "nvidia.cusparse",
+    "nvidia.nccl",
+    "nvidia.nvjitlink",
+    "nvidia.nvtx",
+    # Triton - compilador JIT de PyTorch, no necesario en runtime
+    "triton",
+    # Polars - no se usa
+    "polars",
+    "_polars_runtime_32",
+    # LLVM - solo necesario para compilación JIT
+    "llvmlite",
+    # Módulos de desarrollo y testing
+    "pytest",
+    "unittest",
+    "doctest",
+    "test",
+    "tests",
+    # Jupyter/IPython
+    "IPython",
+    "jupyter",
+    "notebook",
+    # Documentación
+    "sphinx",
+    "pydoc",
+    # Herramientas de desarrollo
+    "setuptools",
+    "distutils",
+    "wheel",
+    # Otros módulos grandes no necesarios
+    "scipy.sparse.csgraph",
+    "scipy.spatial",
+    "scipy.optimize",
+    "scipy.integrate",
+    "scipy.special",
+    "scipy.stats",
+    "sklearn.externals",
+    "sklearn.tests",
+    # TensorFlow - excluir módulos no usados
+    "tensorflow.python.tools",
+    "tensorflow.python.debug",
+    "tensorflow.python.profiler",
+    "tensorflow.python.summary",
+    # PyTorch - excluir módulos no usados
+    "torch.distributed",
+    "torch.multiprocessing",
+    "torch.testing",
+    "torch.utils.bottleneck",
+    "torch.utils.data",
+    "torch.utils.tensorboard",
+]
 
 binaries = []
 
@@ -87,7 +148,7 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=excludes,
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
     cipher=block_cipher,
@@ -122,33 +183,60 @@ if os.name == 'nt':
         icon=ICON_PATH if ICON_PATH and os.path.exists(ICON_PATH) else None,
     )
 else:
-    # Linux: onedir (carpeta con ejecutable y dependencias)
-    exe = EXE(
-        pyz,
-        a.scripts,
-        [],
-        exclude_binaries=True,
-        name="DetectorDrones",
-        debug=False,
-        bootloader_ignore_signals=False,
-        strip=False,
-        upx=False,
-        console=False,
-        disable_windowed_traceback=False,
-        argv_emulation=False,
-        target_arch=None,
-        codesign_identity=None,
-        entitlements_file=None,
-    )
-    
-    coll = COLLECT(
-        exe,
-        a.binaries,
-        a.zipfiles,
-        a.datas,
-        strip=False,
-        upx=False,
-        upx_exclude=[],
-        name="DetectorDrones",
-    )
+    # Linux: Intentar onefile primero, si falla usar onedir
+    # onefile es más eficiente en tamaño pero puede fallar con archivos muy grandes
+    try:
+        # Intentar onefile con compresión
+        exe = EXE(
+            pyz,
+            a.scripts,
+            a.binaries,
+            a.zipfiles,
+            a.datas,
+            [],
+            name="DetectorDrones",
+            debug=False,
+            bootloader_ignore_signals=False,
+            strip=True,  # Stripping reduce el tamaño
+            upx=False,  # UPX puede causar problemas, pero se puede probar
+            upx_exclude=[],
+            runtime_tmpdir=None,
+            console=False,
+            disable_windowed_traceback=False,
+            argv_emulation=False,
+            target_arch=None,
+            codesign_identity=None,
+            entitlements_file=None,
+        )
+        coll = None
+    except:
+        # Fallback a onedir si onefile falla
+        exe = EXE(
+            pyz,
+            a.scripts,
+            [],
+            exclude_binaries=True,
+            name="DetectorDrones",
+            debug=False,
+            bootloader_ignore_signals=False,
+            strip=True,  # Stripping reduce el tamaño
+            upx=False,
+            console=False,
+            disable_windowed_traceback=False,
+            argv_emulation=False,
+            target_arch=None,
+            codesign_identity=None,
+            entitlements_file=None,
+        )
+        
+        coll = COLLECT(
+            exe,
+            a.binaries,
+            a.zipfiles,
+            a.datas,
+            strip=True,  # Stripping reduce el tamaño
+            upx=False,
+            upx_exclude=[],
+            name="DetectorDrones",
+        )
 

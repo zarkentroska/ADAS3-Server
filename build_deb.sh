@@ -46,15 +46,17 @@ fi
 
 pyinstaller --clean --noconfirm pyinstaller.spec
 
-# En Linux, PyInstaller crea una carpeta en lugar de un solo archivo
-if [ -d "$BASE_DIR/dist/DetectorDrones" ]; then
-    # Modo onedir (Linux)
-    EXECUTABLE_PATH="$BASE_DIR/dist/DetectorDrones/DetectorDrones"
-    EXECUTABLE_DIR="$BASE_DIR/dist/DetectorDrones"
-elif [ -f "$BASE_DIR/dist/DetectorDrones" ]; then
-    # Modo onefile (Windows)
+# Detectar si es onefile (archivo único) o onedir (carpeta)
+if [ -f "$BASE_DIR/dist/DetectorDrones" ]; then
+    # Modo onefile (archivo único)
     EXECUTABLE_PATH="$BASE_DIR/dist/DetectorDrones"
     EXECUTABLE_DIR=""
+    echo -e "${GREEN}Modo onefile detectado${NC}"
+elif [ -d "$BASE_DIR/dist/DetectorDrones" ] && [ -f "$BASE_DIR/dist/DetectorDrones/DetectorDrones" ]; then
+    # Modo onedir (carpeta con ejecutable)
+    EXECUTABLE_PATH="$BASE_DIR/dist/DetectorDrones/DetectorDrones"
+    EXECUTABLE_DIR="$BASE_DIR/dist/DetectorDrones"
+    echo -e "${GREEN}Modo onedir detectado${NC}"
 else
     echo -e "${RED}Error: No se generó el ejecutable${NC}"
     exit 1
@@ -90,9 +92,10 @@ WRAPPER_EOF
     chmod +x "$BIN_DIR/${PACKAGE_NAME}"
     chmod +x "$SHARE_DIR/DetectorDrones"
 else
-    # Modo onefile: copiar solo el ejecutable
+    # Modo onefile: copiar solo el ejecutable a /usr/bin
     cp "$EXECUTABLE_PATH" "$BIN_DIR/${PACKAGE_NAME}"
     chmod +x "$BIN_DIR/${PACKAGE_NAME}"
+    echo -e "${GREEN}Ejecutable onefile copiado a $BIN_DIR/${PACKAGE_NAME}${NC}"
 fi
 
 # Copiar icono si existe
