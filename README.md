@@ -17,6 +17,11 @@ ADAS3 Server is a real-time drone detection system that combines video analysis,
 
 This application is part of a client-server architecture project that works together with ADAS3 Android Client. The ultimate goal of this combined project is drone detection for various applications, providing a complete solution for monitoring and detecting unmanned aerial vehicles (UAVs) in real-time.
 
+<div align="center">
+  <img src="https://raw.githubusercontent.com/zarkentroska/ADAS3-Server/main/UI-ADAS3Server.png" alt="ADAS3 Server Interface" width="800">
+  <p><em>Screenshot of the ADAS3 Server user interface</em></p>
+</div>
+
 ## 🎯 Main Features
 
 ### 🎥 Video Analysis
