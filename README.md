@@ -32,6 +32,8 @@ This application is part of a client-server architecture project that works toge
 - **Bounding box visualization** with confidence scores
 - **Configurable detection thresholds**
 - **Model path management** with automatic resource location
+- **Default models**: The two default YOLO models (`best.pt` and `__best.pt`) are based on public datasets from Roboflow, trained with YOLO-formatted images to generate the model files
+- **Custom models**: Users are free to train and load their own models, whether they are related to drones or not
 
 ### 🔊 Audio detection
 - **Real-time audio streaming** from Android devices
@@ -230,9 +232,10 @@ pyinstaller --noconfirm pyinstaller.spec
 
 #### YOLO models
 - Models are stored in `yolo_models_config.json`
-- Default model: `best.pt`
+- Default models: `best.pt` and `__best.pt` (based on public Roboflow datasets, trained with YOLO-formatted images)
 - Custom models can be added via settings dialog
 - Model paths are automatically resolved in compiled executables
+- **User freedom**: Users can train and load any YOLO models they want, whether drone-related or not
 
 #### Audio settings
 - Audio model: `drone_audio_model.h5`
