@@ -22,9 +22,9 @@ This application is part of a client-server architecture project that works toge
   <p><em>Screenshot of the ADAS3 Server user interface</em></p>
 </div>
 
-## 🎯 Main Features
+## 🎯 Main features
 
-### 🎥 Video Analysis
+### 🎥 Video analysis
 - **Real-time video streaming** from Android devices via HTTP
 - **YOLO-based drone detection** with customizable models
 - **Multiple YOLO model slots** (up to 10 configurable models)
@@ -33,7 +33,7 @@ This application is part of a client-server architecture project that works toge
 - **Configurable detection thresholds**
 - **Model path management** with automatic resource location
 
-### 🔊 Audio Detection
+### 🔊 Audio detection
 - **Real-time audio streaming** from Android devices
 - **TensorFlow-based audio analysis** for drone sound detection
 - **PCM audio processing** with configurable sample rates
@@ -41,7 +41,7 @@ This application is part of a client-server architecture project that works toge
 - **Quick enable/disable** via UI button
 - **Visual feedback** with volume/mute icons
 
-### 📡 RF Spectrum Analysis (TinySA Integration)
+### 📡 RF spectrum analysis (TinySA integration)
 - **TinySA Ultra device integration** via USB or HTTP (through Android)
 - **Real-time spectrum visualization** overlaid on video
 - **Multiple scanning modes**:
@@ -53,7 +53,7 @@ This application is part of a client-server architecture project that works toge
 - **Graph overlay** with frequency and dBm scales
 - **Configurable scanning intervals**
 
-### 🌐 Network Integration
+### 🌐 Network integration
 - **Tailscale VPN integration** with automatic service detection
 - **One-click Tailscale activation/deactivation**
 - **Automatic Tailscale installation** for Windows and Linux
@@ -61,7 +61,7 @@ This application is part of a client-server architecture project that works toge
 - **Service status monitoring**
 - **Cross-platform support** (Windows/Linux)
 
-### 🎨 User Interface
+### 🎨 User interface
 - **OpenCV-based GUI** with real-time video display
 - **Interactive controls** for all features
 - **Status indicators** for:
@@ -72,7 +72,7 @@ This application is part of a client-server architecture project that works toge
 - **Settings dialogs** for configuration
 - **Model selection interface**
 
-### 🌍 Multi-language Support
+### 🌍 Multi-language support
 Full support for 5 languages:
 
 - 🇪🇸 **Spanish** (default)
@@ -81,7 +81,7 @@ Full support for 5 languages:
 - 🇮🇹 **Italian** (Italiano)
 - 🇵🇹 **Portuguese** (Português)
 
-### ⚙️ Configuration Management
+### ⚙️ Configuration management
 - **Persistent configuration** for:
   - Camera settings
   - YOLO models and slots
@@ -93,7 +93,7 @@ Full support for 5 languages:
 
 ## 📋 Requirements
 
-### System Requirements
+### System requirements
 - **Windows 10/11** or **Linux** (Ubuntu/Debian recommended)
 - **Python 3.8+** (for development)
 - **Minimum 4GB RAM** (8GB+ recommended)
@@ -111,13 +111,13 @@ Full support for 5 languages:
 - Matplotlib
 - Serial (pyserial)
 
-### Hardware (Optional)
+### Hardware (optional)
 - **TinySA Ultra** - RF spectrum analyzer (USB or via Android)
 - **Android device** - Running ADAS3 Android Client
 
 ## 🚀 Installation
 
-### Option 1: Precompiled Packages
+### Option 1: precompiled packages
 
 <div align="center">
   <a href="https://github.com/zarkentroska/ADAS3-Server/releases/latest">
@@ -138,7 +138,7 @@ Full support for 5 languages:
    ```
 3. Launch from terminal: `adas3` or from applications menu
 
-### Option 2: Build from Source
+### Option 2: build from source
 
 #### Prerequisites
 ```bash
@@ -167,7 +167,7 @@ pip install -r requirements.txt
 python testcam.py
 ```
 
-#### Building Executables
+#### Building executables
 
 **Windows (.exe):**
 ```bash
@@ -183,7 +183,7 @@ pyinstaller --noconfirm pyinstaller.spec
 
 ## 🎮 Usage
 
-### Initial Setup
+### Initial setup
 
 1. **Start the application**
    - On Windows: Double-click the `.exe` file
@@ -199,49 +199,49 @@ pyinstaller --noconfirm pyinstaller.spec
    - Add or select YOLO model files (.pt format)
    - Configure up to 10 model slots
 
-### Basic Operation
+### Basic operation
 
-1. **Video Detection**
+1. **Video detection**
    - Video stream displays automatically when connected
    - Drones are detected and highlighted with bounding boxes
    - Confidence scores are shown for each detection
 
-2. **Audio Detection**
+2. **Audio detection**
    - Click the audio button (🎤) to enable/disable audio streaming
    - Audio analysis runs in the background
    - Detection results are displayed in the console
 
-3. **TinySA Integration**
+3. **TinySA integration**
    - Connect TinySA via USB or configure via Android
    - Click the TinySA button to start scanning
    - Select frequency range and scanning mode
    - Spectrum graph appears overlaid on video
 
-4. **Tailscale Integration**
+4. **Tailscale integration**
    - Click the Tailscale ON/OFF button
    - If not installed, use "Install Service" option
    - Follow OAuth authentication in browser
    - Status indicator shows connection state
 
-### Advanced Configuration
+### Advanced configuration
 
-#### YOLO Models
+#### YOLO models
 - Models are stored in `yolo_models_config.json`
 - Default model: `best.pt`
 - Custom models can be added via settings dialog
 - Model paths are automatically resolved in compiled executables
 
-#### Audio Settings
+#### Audio settings
 - Audio model: `drone_audio_model.h5`
 - Normalization files: `audio_mean.npy`, `audio_std.npy`
 - Sample rate: Configurable (default: 44100 Hz)
 
-#### TinySA Configuration
+#### TinySA configuration
 - Advanced intervals stored in `tinysa_advanced_intervals.json`
 - Custom frequency ranges can be configured
 - Scanning intervals are configurable
 
-## 🔧 Configuration Files
+## 🔧 Configuration files
 
 - `config_camara.json` - Camera and general settings
 - `yolo_models_config.json` - YOLO model configuration
@@ -251,7 +251,7 @@ pyinstaller --noconfirm pyinstaller.spec
 
 ## 🛠️ Development
 
-### Project Structure
+### Project structure
 ```
 ADAS3-Server/
 ├── testcam.py                 # Main application script
@@ -265,7 +265,7 @@ ADAS3-Server/
 └── *.png, *.ico              # UI resources
 ```
 
-### Technologies Used
+### Technologies used
 - **Python 3.8+** - Programming language
 - **OpenCV** - Video processing and GUI
 - **TensorFlow** - Audio analysis
@@ -285,7 +285,7 @@ ADAS3-Server/
 
 See LICENSE file for details.
 
-## 🔄 Version History
+## 🔄 Version history
 
 ### v0.5 Alpha
 - Initial release with all main features
@@ -298,15 +298,7 @@ See LICENSE file for details.
 - Configurable YOLO model slots
 - Real-time video and audio streaming
 
-## 📚 Related Projects
+## 📚 Related projects
 
 - **[ADAS3 Android Client](https://github.com/zarkentroska/ADAS3-Client)** - Android streaming client
 - **[ADAS3 Releases](https://github.com/zarkentroska/adas3)** - Compiled binaries repository
-
-## 🤝 Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
-
-## 📧 Support
-
-For issues and questions, please open an issue on GitHub.
