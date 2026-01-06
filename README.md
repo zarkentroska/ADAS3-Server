@@ -38,10 +38,13 @@ This application is part of a client-server architecture project that works toge
 ### 🔊 Audio detection
 - **Real-time audio streaming** from Android devices
 - **TensorFlow-based audio analysis** for drone sound detection
+- **Training dataset**: The drone audio model has been trained using the [DroneAudioDataset](https://github.com/saraalemadi/DroneAudioDataset) by [saraalemadi](https://github.com/saraalemadi) via TensorFlow
+- **Confidence threshold**: Adjustable confidence parameters for detection sensitivity
 - **PCM audio processing** with configurable sample rates
 - **Audio normalization** using pre-computed statistics
 - **Quick enable/disable** via UI button
 - **Visual feedback** with volume/mute icons
+- **Future enhancements**: Future versions will investigate the possibility of allowing users to load other models for drone detection or other sound-emitting objects based on different datasets
 
 ### 📡 RF spectrum analysis (TinySA integration)
 - **TinySA Ultra device integration** via USB or HTTP (through Android)
@@ -238,9 +241,10 @@ pyinstaller --noconfirm pyinstaller.spec
 - **User freedom**: Users can train and load any YOLO models they want, whether drone-related or not
 
 #### Audio settings
-- Audio model: `drone_audio_model.h5`
+- Audio model: `drone_audio_model.h5` (trained with [DroneAudioDataset](https://github.com/saraalemadi/DroneAudioDataset) by [saraalemadi](https://github.com/saraalemadi))
 - Normalization files: `audio_mean.npy`, `audio_std.npy`
 - Sample rate: Configurable (default: 44100 Hz)
+- Confidence threshold: Adjustable parameters for detection sensitivity
 
 #### TinySA configuration
 - Advanced intervals stored in `tinysa_advanced_intervals.json`
