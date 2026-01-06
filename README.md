@@ -47,15 +47,7 @@ This application is part of a client-server architecture project that works toge
 - **Future enhancements**: Future versions will investigate the possibility of allowing users to load other models for drone detection or other sound-emitting objects based on different datasets
 
 ```bibtex
-@INPROCEEDINGS{AlEm1906:Audio,
-  AUTHOR="Sara A Al-Emadi and Abdulla K Al-Ali and Abdulaziz Al-Ali and Amr Mohamed",
-  TITLE="Audio Based Drone Detection and Identification using Deep Learning",
-  BOOKTITLE="IWCMC 2019 Vehicular Symposium (IWCMC-VehicularCom 2019)",
-  ADDRESS="Tangier, Morocco",
-  DAYS=23,
-  MONTH=jun,
-  YEAR=2019,
-}
+Sara A Al-Emadi, Abdulla K Al-Ali, Abdulaziz Al-Ali, & Amr Mohamed (2019). Audio Based Drone Detection and Identification using Deep Learning. In IWCMC 2019 Vehicular Symposium (IWCMC-VehicularCom 2019).
 ```
 
 ### 📡 RF spectrum analysis (TinySA integration)
