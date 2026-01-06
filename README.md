@@ -1,25 +1,289 @@
 # ADAS3 Server
+Version: 0.5 Alpha
 
-Sistema de detección de drones con análisis de audio y video.
+ADAS3 Server is a real-time drone detection system that combines video analysis, audio processing, and RF spectrum monitoring. It works in conjunction with the ADAS3 Android Client to provide a complete solution for detecting and monitoring unmanned aerial vehicles (UAVs) in real-time.
 
-**Versión: v0.5 Alpha**
+This application is part of a client-server architecture project that works together with ADAS3 Android Client. The ultimate goal of this combined project is drone detection for various applications, providing a complete solution for monitoring and detecting unmanned aerial vehicles (UAVs) in real-time.
 
-## Repositorios del Proyecto ADAS3
+## 🎯 Main Features
 
-Este proyecto está dividido en tres repositorios:
+### 🎥 Video Analysis
+- **Real-time video streaming** from Android devices via HTTP
+- **YOLO-based drone detection** with customizable models
+- **Multiple YOLO model slots** (up to 10 configurable models)
+- **Dynamic model switching** during runtime
+- **Bounding box visualization** with confidence scores
+- **Configurable detection thresholds**
+- **Model path management** with automatic resource location
 
-- **[ADAS3 Server](https://github.com/zarkentroska/ADAS3-Server)** (este repositorio) - Código fuente del servidor
-- **[ADAS3 Client](https://github.com/zarkentroska/ADAS3-Client)** - Código fuente del cliente
-- **[ADAS3 Releases](https://github.com/zarkentroska/adas3)** - Ejecutables compilados para todas las plataformas
+### 🔊 Audio Detection
+- **Real-time audio streaming** from Android devices
+- **TensorFlow-based audio analysis** for drone sound detection
+- **PCM audio processing** with configurable sample rates
+- **Audio normalization** using pre-computed statistics
+- **Quick enable/disable** via UI button
+- **Visual feedback** with volume/mute icons
 
-## Estructura del Proyecto
+### 📡 RF Spectrum Analysis (TinySA Integration)
+- **TinySA Ultra device integration** via USB or HTTP (through Android)
+- **Real-time spectrum visualization** overlaid on video
+- **Multiple scanning modes**:
+  - Quick scan (100-350 MHz)
+  - Full scan (100-350 MHz)
+  - Custom frequency ranges
+  - Advanced intervals with custom configurations
+- **Automatic frequency range detection**
+- **Graph overlay** with frequency and dBm scales
+- **Configurable scanning intervals**
 
-- `testcam.py` - Script principal
-- `pyinstaller.spec` - Configuración de empaquetado
-- Modelos y archivos de configuración en la raíz del proyecto
+### 🌐 Network Integration
+- **Tailscale VPN integration** with automatic service detection
+- **One-click Tailscale activation/deactivation**
+- **Automatic Tailscale installation** for Windows and Linux
+- **OAuth-based authentication** flow
+- **Service status monitoring**
+- **Cross-platform support** (Windows/Linux)
 
-## Notas
+### 🎨 User Interface
+- **OpenCV-based GUI** with real-time video display
+- **Interactive controls** for all features
+- **Status indicators** for:
+  - YOLO detection status
+  - Audio streaming status
+  - TinySA connection status
+  - Tailscale connection status
+- **Settings dialogs** for configuration
+- **Model selection interface**
 
-- La carpeta `.venv/` está excluida del repositorio (ver `.gitignore`)
-- Los archivos compilados de PyInstaller también están excluidos
+### 🌍 Multi-language Support
+Full support for 5 languages:
 
+- 🇪🇸 **Spanish** (default)
+- 🇬🇧 **English**
+- 🇫🇷 **French** (Français)
+- 🇮🇹 **Italian** (Italiano)
+- 🇵🇹 **Portuguese** (Português)
+
+### ⚙️ Configuration Management
+- **Persistent configuration** for:
+  - Camera settings
+  - YOLO models and slots
+  - Language preferences
+  - Tailscale settings
+  - TinySA intervals
+- **JSON-based configuration files**
+- **Automatic resource path resolution** (works in compiled executables)
+
+## 📋 Requirements
+
+### System Requirements
+- **Windows 10/11** or **Linux** (Ubuntu/Debian recommended)
+- **Python 3.8+** (for development)
+- **Minimum 4GB RAM** (8GB+ recommended)
+- **GPU support** (optional, for faster YOLO inference)
+
+### Dependencies
+- OpenCV (cv2)
+- TensorFlow
+- PyTorch / Ultralytics YOLO
+- NumPy
+- Librosa
+- PyAudio
+- Tkinter
+- Requests
+- Matplotlib
+- Serial (pyserial)
+
+### Hardware (Optional)
+- **TinySA Ultra** - RF spectrum analyzer (USB or via Android)
+- **Android device** - Running ADAS3 Android Client
+
+## 🚀 Installation
+
+### Option 1: Precompiled Packages
+
+#### Windows
+1. Download `ADAS3-Server-0.5Alpha-win-x64.exe` from [Releases](https://github.com/zarkentroska/ADAS3-Server/releases)
+2. Run the installer
+3. Launch the application
+
+#### Linux (Debian/Ubuntu)
+1. Download `adas3-server-0.5alpha_amd64.deb` from [Releases](https://github.com/zarkentroska/ADAS3-Server/releases)
+2. Install the package:
+   ```bash
+   sudo dpkg -i adas3-server-0.5alpha_amd64.deb
+   ```
+3. Launch from terminal: `adas3` or from applications menu
+
+### Option 2: Build from Source
+
+#### Prerequisites
+```bash
+# Install Python 3.8+
+sudo apt-get update
+sudo apt-get install python3 python3-pip python3-venv
+
+# Install system dependencies (Linux)
+sudo apt-get install python3-tk portaudio19-dev libasound2-dev
+```
+
+#### Setup
+```bash
+# Clone the repository
+git clone https://github.com/zarkentroska/ADAS3-Server.git
+cd ADAS3-Server
+
+# Create virtual environment
+python3 -m venv .venv
+source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+
+# Install dependencies
+pip install -r requirements.txt
+
+# Run the application
+python testcam.py
+```
+
+#### Building Executables
+
+**Windows (.exe):**
+```bash
+pyinstaller --noconfirm pyinstaller.spec
+# Output: dist/DetectorDrones.exe
+```
+
+**Linux (.deb):**
+```bash
+./build_deb.sh
+# Output: adas3-server-0.5alpha_amd64.deb
+```
+
+## 🎮 Usage
+
+### Initial Setup
+
+1. **Start the application**
+   - On Windows: Double-click the `.exe` file
+   - On Linux: Run `adas3` from terminal or applications menu
+
+2. **Connect to Android Client**
+   - Ensure ADAS3 Android Client is running on your Android device
+   - Enter the Android device's IP address in the application
+   - The video stream should start automatically
+
+3. **Configure YOLO Models** (Optional)
+   - Click the YOLO settings icon (⚙️)
+   - Add or select YOLO model files (.pt format)
+   - Configure up to 10 model slots
+
+### Basic Operation
+
+1. **Video Detection**
+   - Video stream displays automatically when connected
+   - Drones are detected and highlighted with bounding boxes
+   - Confidence scores are shown for each detection
+
+2. **Audio Detection**
+   - Click the audio button (🎤) to enable/disable audio streaming
+   - Audio analysis runs in the background
+   - Detection results are displayed in the console
+
+3. **TinySA Integration**
+   - Connect TinySA via USB or configure via Android
+   - Click the TinySA button to start scanning
+   - Select frequency range and scanning mode
+   - Spectrum graph appears overlaid on video
+
+4. **Tailscale Integration**
+   - Click the Tailscale ON/OFF button
+   - If not installed, use "Install Service" option
+   - Follow OAuth authentication in browser
+   - Status indicator shows connection state
+
+### Advanced Configuration
+
+#### YOLO Models
+- Models are stored in `yolo_models_config.json`
+- Default model: `best.pt`
+- Custom models can be added via settings dialog
+- Model paths are automatically resolved in compiled executables
+
+#### Audio Settings
+- Audio model: `drone_audio_model.h5`
+- Normalization files: `audio_mean.npy`, `audio_std.npy`
+- Sample rate: Configurable (default: 44100 Hz)
+
+#### TinySA Configuration
+- Advanced intervals stored in `tinysa_advanced_intervals.json`
+- Custom frequency ranges can be configured
+- Scanning intervals are configurable
+
+## 🔧 Configuration Files
+
+- `config_camara.json` - Camera and general settings
+- `yolo_models_config.json` - YOLO model configuration
+- `language_config.json` - Language preference
+- `tailscale_config.json` - Tailscale settings
+- `tinysa_advanced_intervals.json` - TinySA frequency intervals
+
+## 🛠️ Development
+
+### Project Structure
+```
+ADAS3-Server/
+├── testcam.py                 # Main application script
+├── pyinstaller.spec          # PyInstaller configuration
+├── build_deb.sh              # Linux .deb build script
+├── BUILD_DEB.md              # Build documentation
+├── *.pt                      # YOLO model files
+├── *.h5                      # TensorFlow audio model
+├── *.npy                     # Audio normalization files
+├── *.json                    # Configuration files
+└── *.png, *.ico              # UI resources
+```
+
+### Technologies Used
+- **Python 3.8+** - Programming language
+- **OpenCV** - Video processing and GUI
+- **TensorFlow** - Audio analysis
+- **PyTorch / Ultralytics** - YOLO object detection
+- **Tkinter** - Configuration dialogs
+- **PyInstaller** - Executable packaging
+- **Librosa** - Audio processing
+- **NumPy** - Numerical computations
+
+## 🔒 Security
+
+- **Tailscale VPN** - Secure remote connections
+- **OAuth authentication** - Secure Tailscale login
+- **Local configuration** - All settings stored locally
+
+## 📝 License
+
+See LICENSE file for details.
+
+## 🔄 Version History
+
+### v0.5 Alpha
+- Initial release with all main features
+- YOLO-based drone detection
+- TensorFlow audio analysis
+- TinySA Ultra integration
+- Tailscale VPN support
+- Multi-language support (5 languages)
+- Windows and Linux executables
+- Configurable YOLO model slots
+- Real-time video and audio streaming
+
+## 📚 Related Projects
+
+- **[ADAS3 Android Client](https://github.com/zarkentroska/ADAS3-Client)** - Android streaming client
+- **[ADAS3 Releases](https://github.com/zarkentroska/adas3)** - Compiled binaries repository
+
+## 🤝 Contributing
+
+Contributions are welcome! Please feel free to submit a Pull Request.
+
+## 📧 Support
+
+For issues and questions, please open an issue on GitHub.

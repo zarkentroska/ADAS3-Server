@@ -24,13 +24,24 @@ import queue
 import serial
 import serial.tools.list_ports
 import struct
+import sys
 
 # Obtener la ruta absoluta del directorio donde está este script
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+# Si se ejecuta desde un ejecutable de PyInstaller, usar sys._MEIPASS
+# que contiene la ruta temporal donde se extraen los archivos
+if getattr(sys, 'frozen', False):
+    # Ejecutándose desde un ejecutable compilado
+    BASE_DIR = sys._MEIPASS
+else:
+    # Ejecutándose como script normal
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # Rutas absolutas a los recursos
 CONFIG_FILE = os.path.join(BASE_DIR, "config_camara.json")
 LANGUAGE_CONFIG_FILE = os.path.join(BASE_DIR, "language_config.json")
+TAILSCALE_CONFIG_FILE = os.path.join(BASE_DIR, "tailscale_config.json")
+TAILSCALE_INSTALLER_WIN = os.path.join(BASE_DIR, "tailscale-setup.exe")
+TAILSCALE_INSTALLER_LINUX = os.path.join(BASE_DIR, "tailscale-installer.sh")
 AUDIO_MODEL_PATH = os.path.join(BASE_DIR, "drone_audio_model.h5")
 YOLO_DEFAULT_MODEL = os.path.join(BASE_DIR, "best.pt")
 YOLO_MODELS_CONFIG = os.path.join(BASE_DIR, "yolo_models_config.json")
@@ -45,6 +56,9 @@ yolo_model_path = YOLO_DEFAULT_MODEL
 yolo_model_slots = []
 yolo_default_slot = 0
 yolo_options_thread = None
+tailscale_options_thread = None
+tailscale_message_lock = threading.Lock()
+tailscale_message_shown = {'connecting': False, 'connected': False, 'disconnected': False}
 
 # --- VARIABLES GLOBALES UI ---
 mouse_x, mouse_y = -1, -1
@@ -79,16 +93,58 @@ def update_stream_endpoints(ip_with_port, record_wifi=True):
     ip_y_puerto = ip_with_port
     base_url = f"http://{ip_y_puerto}"
     video_url = base_url + "/video"
-    audio_url = base_url + "/audio.wav"
+    audio_url = base_url + "/audio"
     guardar_ip(ip_y_puerto)
 
+
+def normalize_model_path(path):
+    """Normaliza una ruta de modelo para que funcione tanto en desarrollo como en ejecutable compilado."""
+    if not path:
+        return ""
+    
+    # Si es una ruta absoluta que apunta a un archivo en BASE_DIR, convertirla a relativa
+    if os.path.isabs(path):
+        try:
+            # Verificar si la ruta está dentro de BASE_DIR
+            rel_path = os.path.relpath(path, BASE_DIR)
+            if not rel_path.startswith('..'):
+                # Está dentro de BASE_DIR, usar ruta relativa
+                normalized = os.path.join(BASE_DIR, os.path.basename(path))
+                if os.path.exists(normalized):
+                    return normalized
+        except:
+            pass
+        
+        # Si la ruta absoluta existe, usarla
+        if os.path.exists(path):
+            return path
+        # Si no existe, intentar buscar solo el nombre del archivo en BASE_DIR
+        filename = os.path.basename(path)
+        candidate = os.path.join(BASE_DIR, filename)
+        if os.path.exists(candidate):
+            return candidate
+        return path
+    
+    # Si es relativa, construir la ruta completa
+    full_path = os.path.join(BASE_DIR, path)
+    if os.path.exists(full_path):
+        return full_path
+    
+    # Si no existe, intentar solo el nombre del archivo
+    filename = os.path.basename(path) if path else ""
+    if filename:
+        candidate = os.path.join(BASE_DIR, filename)
+        if os.path.exists(candidate):
+            return candidate
+    
+    return path
 
 def load_yolo_models_config():
     """Carga o inicializa la configuración de modelos YOLO."""
     global yolo_model_slots, yolo_default_slot, yolo_model_path
 
     default_slots = [
-        {"path": YOLO_DEFAULT_MODEL, "description": "Modelo por defecto"},
+        {"path": "best.pt", "description": "Modelo por defecto"},
     ] + [{"path": "", "description": ""} for _ in range(14)]
 
     if os.path.exists(YOLO_MODELS_CONFIG):
@@ -98,6 +154,20 @@ def load_yolo_models_config():
                 slots = data.get("slots", [])
                 while len(slots) < 15:
                     slots.append({"path": "", "description": ""})
+                
+                # Normalizar todas las rutas de los slots
+                for slot in slots:
+                    if slot.get("path"):
+                        slot["path"] = normalize_model_path(slot["path"])
+                        # Guardar solo el nombre del archivo si está en BASE_DIR
+                        if os.path.isabs(slot["path"]):
+                            try:
+                                rel_path = os.path.relpath(slot["path"], BASE_DIR)
+                                if not rel_path.startswith('..'):
+                                    slot["path"] = os.path.basename(slot["path"])
+                            except:
+                                pass
+                
                 yolo_model_slots = slots[:15]
                 yolo_default_slot = int(data.get("default_slot", 0))
         except Exception as e:
@@ -112,17 +182,43 @@ def load_yolo_models_config():
     if not (0 <= yolo_default_slot < len(yolo_model_slots)):
         yolo_default_slot = 0
 
-    default_path = yolo_model_slots[yolo_default_slot].get("path") or YOLO_DEFAULT_MODEL
-    if not os.path.isabs(default_path):
-        default_path = os.path.join(BASE_DIR, default_path)
+    default_path = yolo_model_slots[yolo_default_slot].get("path") or "best.pt"
+    # Normalizar la ruta final
+    default_path = normalize_model_path(default_path)
+    if not default_path or not os.path.exists(default_path):
+        # Fallback al modelo por defecto
+        default_path = os.path.join(BASE_DIR, "best.pt")
     yolo_model_path = default_path
 
 
 def save_yolo_models_config():
     """Guarda la configuración actual de modelos YOLO."""
     try:
+        # Crear una copia de los slots normalizando las rutas antes de guardar
+        slots_to_save = []
+        for slot in yolo_model_slots:
+            slot_copy = slot.copy()
+            path = slot_copy.get("path", "")
+            if path:
+                # Si la ruta está en BASE_DIR, guardar solo el nombre del archivo
+                if os.path.isabs(path):
+                    try:
+                        rel_path = os.path.relpath(path, BASE_DIR)
+                        if not rel_path.startswith('..'):
+                            # Está dentro de BASE_DIR, guardar solo el nombre
+                            slot_copy["path"] = os.path.basename(path)
+                        else:
+                            # Está fuera, mantener la ruta absoluta
+                            slot_copy["path"] = path
+                    except:
+                        slot_copy["path"] = os.path.basename(path) if os.path.exists(os.path.join(BASE_DIR, os.path.basename(path))) else path
+                else:
+                    # Ya es relativa, mantenerla
+                    slot_copy["path"] = path
+            slots_to_save.append(slot_copy)
+        
         data = {
-            "slots": yolo_model_slots,
+            "slots": slots_to_save,
             "default_slot": yolo_default_slot,
         }
         with open(YOLO_MODELS_CONFIG, "w", encoding="utf-8") as f:
@@ -201,6 +297,377 @@ def guardar_ip(ip):
     except Exception as e:
         print(f"Error al guardar IP: {e}")
 
+# --- FUNCIONES TAILSCALE ---
+tailscale_running = False
+tailscale_username = ""
+tailscale_password = ""
+
+def cargar_tailscale_config():
+    """Carga la configuración de Tailscale"""
+    global tailscale_username, tailscale_password
+    if os.path.exists(TAILSCALE_CONFIG_FILE):
+        try:
+            with open(TAILSCALE_CONFIG_FILE, 'r', encoding='utf-8') as f:
+                config = json.load(f)
+                tailscale_username = config.get('username', '')
+                tailscale_password = config.get('password', '')
+        except Exception as e:
+            print(f"Error al cargar configuración Tailscale: {e}")
+            tailscale_username = ""
+            tailscale_password = ""
+
+def guardar_tailscale_config(username, password):
+    """Guarda la configuración de Tailscale"""
+    global tailscale_username, tailscale_password
+    try:
+        with open(TAILSCALE_CONFIG_FILE, 'w', encoding='utf-8') as f:
+            json.dump({'username': username, 'password': password}, f, indent=2)
+        tailscale_username = username
+        tailscale_password = password
+        return True
+    except Exception as e:
+        print(f"Error al guardar configuración Tailscale: {e}")
+        return False
+
+def verificar_estado_tailscale():
+    """Verifica el estado real de Tailscale y actualiza tailscale_running"""
+    global tailscale_running
+    
+    if not tailscale_installed():
+        tailscale_running = False
+        return False
+    
+    try:
+        status_cmd = 'tailscale status'
+        status_result = subprocess.run(status_cmd, shell=True, capture_output=True, text=True, timeout=5)
+        
+        if status_result.returncode == 0:
+            # Verificar si está conectado (tiene IP asignada o está logged in)
+            if 'Logged in' in status_result.stdout or '100.' in status_result.stdout:
+                tailscale_running = True
+                return True
+        
+        tailscale_running = False
+        return False
+    except Exception as e:
+        print(f"Error verificando estado de Tailscale: {e}")
+        tailscale_running = False
+        return False
+
+def tailscale_installed():
+    """Verifica si Tailscale está instalado"""
+    if os.name == 'nt':  # Windows
+        # En Windows, verificar múltiples formas:
+        # 1. Intentar el comando tailscale directamente
+        try:
+            result = subprocess.run('tailscale --version', shell=True, capture_output=True, text=True, timeout=5)
+            if result.returncode == 0:
+                return True
+        except:
+            pass
+        
+        # 2. Verificar si existe el ejecutable en rutas comunes
+        common_paths = [
+            r'C:\Program Files\Tailscale\tailscale.exe',
+            r'C:\Program Files (x86)\Tailscale\tailscale.exe',
+            os.path.expanduser(r'~\AppData\Local\Tailscale\tailscale.exe'),
+        ]
+        for path in common_paths:
+            if os.path.exists(path):
+                return True
+        
+        # 3. Verificar si el servicio de Tailscale está instalado
+        try:
+            result = subprocess.run('sc query Tailscale', shell=True, capture_output=True, text=True, timeout=5)
+            if result.returncode == 0 and 'SERVICE_NAME: Tailscale' in result.stdout:
+                return True
+        except:
+            pass
+        
+        return False
+    else:  # Linux
+        cmd = 'tailscale version'
+        try:
+            result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=5)
+            return result.returncode == 0
+        except:
+            return False
+
+def install_tailscale():
+    """Instala Tailscale en modo silencioso"""
+    if os.name == 'nt':  # Windows
+        installer_path = TAILSCALE_INSTALLER_WIN
+        if not os.path.exists(installer_path):
+            def show_not_found():
+                root = Tk()
+                root.withdraw()
+                root.attributes("-topmost", True)
+                messagebox.showerror(t('error'), t('tailscale_installer_not_found'))
+                root.destroy()
+            threading.Thread(target=show_not_found, daemon=True).start()
+            return False
+        
+        def install_thread():
+            try:
+                # Instalación silenciosa en Windows: /S para silent, /quiet también funciona
+                # Algunos instaladores usan /SILENT o /VERYSILENT
+                cmd = f'"{installer_path}" /S'
+                result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=120)
+                
+                if result.returncode == 0:
+                    # Esperar un poco para que la instalación se complete y el PATH se actualice
+                    time.sleep(3)
+                    
+                    # Verificar si ahora está instalado
+                    if tailscale_installed():
+                        def show_success():
+                            root = Tk()
+                            root.withdraw()
+                            root.attributes("-topmost", True)
+                            messagebox.showinfo(t('tailscale_install_success'), t('tailscale_install_success'))
+                            root.destroy()
+                        threading.Thread(target=show_success, daemon=True).start()
+                    else:
+                        # Instalación exitosa pero aún no detectado (puede necesitar reiniciar)
+                        def show_success_restart():
+                            root = Tk()
+                            root.withdraw()
+                            root.attributes("-topmost", True)
+                            messagebox.showinfo(t('tailscale_install_success'), 
+                                              t('tailscale_install_success') + '\n\n' + 
+                                              'Si no se detecta, reinicia la aplicación.')
+                            root.destroy()
+                        threading.Thread(target=show_success_restart, daemon=True).start()
+                else:
+                    raise Exception(result.stderr)
+            except Exception as e:
+                print(f"Error instalando Tailscale: {e}")
+                def show_error():
+                    root = Tk()
+                    root.withdraw()
+                    root.attributes("-topmost", True)
+                    messagebox.showerror(t('error'), t('tailscale_install_error'))
+                    root.destroy()
+                threading.Thread(target=show_error, daemon=True).start()
+        
+        threading.Thread(target=install_thread, daemon=True).start()
+        return True
+    else:  # Linux
+        installer_path = TAILSCALE_INSTALLER_LINUX
+        if not os.path.exists(installer_path):
+            def show_not_found():
+                root = Tk()
+                root.withdraw()
+                root.attributes("-topmost", True)
+                messagebox.showerror(t('error'), t('tailscale_installer_not_found'))
+                root.destroy()
+            threading.Thread(target=show_not_found, daemon=True).start()
+            return False
+        
+        def install_thread():
+            try:
+                # Hacer el script ejecutable
+                os.chmod(installer_path, 0o755)
+                # Ejecutar el instalador (puede requerir sudo)
+                cmd = f'sudo bash "{installer_path}"'
+                result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=120)
+                
+                if result.returncode == 0:
+                    def show_success():
+                        root = Tk()
+                        root.withdraw()
+                        root.attributes("-topmost", True)
+                        messagebox.showinfo(t('tailscale_install_success'), t('tailscale_install_success'))
+                        root.destroy()
+                    threading.Thread(target=show_success, daemon=True).start()
+                else:
+                    raise Exception(result.stderr)
+            except Exception as e:
+                print(f"Error instalando Tailscale: {e}")
+                def show_error():
+                    root = Tk()
+                    root.withdraw()
+                    root.attributes("-topmost", True)
+                    messagebox.showerror(t('error'), t('tailscale_install_error'))
+                    root.destroy()
+                threading.Thread(target=show_error, daemon=True).start()
+        
+        threading.Thread(target=install_thread, daemon=True).start()
+        return True
+
+def toggle_tailscale():
+    """Activa o desactiva Tailscale"""
+    global tailscale_running
+    
+    if not tailscale_installed():
+        def show_not_installed():
+            root = Tk()
+            root.withdraw()
+            root.attributes("-topmost", True)
+            messagebox.showerror(t('error'), t('tailscale_not_installed'))
+            root.destroy()
+        threading.Thread(target=show_not_installed, daemon=True).start()
+        return
+    
+    def connect_tailscale():
+        global tailscale_running
+        try:
+            # Verificar estado actual de Tailscale
+            status_cmd = 'tailscale status'
+            status_result = subprocess.run(status_cmd, shell=True, capture_output=True, text=True, timeout=5)
+            
+            # Si ya está conectado, no hacer nada
+            if status_result.returncode == 0:
+                if 'Logged in' in status_result.stdout or '100.' in status_result.stdout:
+                    tailscale_running = True
+                    # Ya está conectado, no mostrar mensaje desde hilo secundario
+                    # El estado se reflejará automáticamente en la UI
+                    return
+            
+            # Ejecutar tailscale up capturando stderr para detectar errores de permisos
+            cmd = 'tailscale up'
+            
+            # Ejecutar capturando stderr para detectar errores
+            import tempfile
+            with tempfile.NamedTemporaryFile(mode='w+', delete=False, suffix='.log') as err_file:
+                err_path = err_file.name
+            
+            try:
+                process = subprocess.Popen(
+                    cmd, 
+                    shell=True,
+                    stdout=subprocess.DEVNULL,  # No capturar stdout
+                    stderr=open(err_path, 'w'),  # Capturar stderr en archivo
+                    stdin=subprocess.DEVNULL
+                )
+                
+                # Esperar un momento para ver si hay errores inmediatos
+                time.sleep(1.5)
+                
+                # Verificar si el proceso terminó con error
+                if process.poll() is not None:
+                    # Leer el error
+                    with open(err_path, 'r') as f:
+                        error_output = f.read()
+                    os.unlink(err_path)
+                    
+                    if process.returncode != 0:
+                        # Verificar si es un error de permisos
+                        error_lower = error_output.lower()
+                        if ('access denied' in error_lower or 
+                            'prefs write access denied' in error_lower or 
+                            'use \'sudo tailscale up\'' in error_lower or
+                            'sudo tailscale set' in error_lower):
+                            # Necesita sudo, mostrar mensaje informativo
+                            def show_sudo_info():
+                                global tailscale_message_lock
+                                with tailscale_message_lock:
+                                    try:
+                                        root = Tk()
+                                        root.withdraw()
+                                        root.attributes("-topmost", True)
+                                        messagebox.showinfo("Configuración Tailscale", t('tailscale_sudo_needed'))
+                                        root.quit()
+                                        root.destroy()
+                                    except Exception as ex:
+                                        print(f"Error mostrando mensaje: {ex}")
+                            threading.Thread(target=show_sudo_info, daemon=True).start()
+                            return
+                        else:
+                            # Otro tipo de error
+                            print(f"Error ejecutando tailscale up: {error_output}")
+                            return
+                
+                # Si llegamos aquí, el proceso está corriendo o ya terminó exitosamente
+                # No mostrar mensaje de "conectando" para evitar problemas de threading
+                # Solo verificaremos el estado y mostraremos el resultado final
+                
+                # Verificar estado después de unos segundos
+                def check_status():
+                    # Esperar a que el proceso termine o timeout
+                    try:
+                        process.wait(timeout=20)
+                        # Si terminó, verificar si fue con error
+                        if process.returncode != 0:
+                            try:
+                                with open(err_path, 'r') as f:
+                                    error_output = f.read()
+                                os.unlink(err_path)
+                                error_lower = error_output.lower()
+                                if ('access denied' in error_lower or 
+                                    'prefs write access denied' in error_lower or 
+                                    'use \'sudo tailscale up\'' in error_lower or
+                                    'sudo tailscale set' in error_lower):
+                                    def show_sudo_info():
+                                        global tailscale_message_lock
+                                        with tailscale_message_lock:
+                                            try:
+                                                root = Tk()
+                                                root.withdraw()
+                                                root.attributes("-topmost", True)
+                                                messagebox.showinfo("Configuración Tailscale", t('tailscale_sudo_needed'))
+                                                root.quit()
+                                                root.destroy()
+                                            except Exception as ex:
+                                                print(f"Error mostrando mensaje: {ex}")
+                                    threading.Thread(target=show_sudo_info, daemon=True).start()
+                                    return
+                            except:
+                                pass
+                    except subprocess.TimeoutExpired:
+                        # El proceso sigue corriendo, probablemente abrió el navegador
+                        try:
+                            os.unlink(err_path)
+                        except:
+                            pass
+                    
+                    # Verificar el estado de Tailscale después de un tiempo
+                    time.sleep(3)
+                    try:
+                        status_result = subprocess.run('tailscale status', shell=True, capture_output=True, text=True, timeout=5)
+                        if status_result.returncode == 0:
+                            if 'Logged in' in status_result.stdout or '100.' in status_result.stdout:
+                                global tailscale_running
+                                tailscale_running = True
+                                # No mostrar mensaje de "conectado" para evitar problemas de threading
+                                # El estado se reflejará en la UI automáticamente
+                            # Si no está conectado aún, puede que el usuario esté autenticándose
+                            # No mostramos error, el proceso puede estar esperando
+                    except Exception as e:
+                        print(f"Error verificando estado Tailscale: {e}")
+                
+                threading.Thread(target=check_status, daemon=True).start()
+                
+            except Exception as e:
+                try:
+                    os.unlink(err_path)
+                except:
+                    pass
+                print(f"Error ejecutando tailscale up: {e}")
+            
+        except Exception as e:
+            print(f"Error conectando Tailscale: {e}")
+            # No mostrar error desde aquí para evitar problemas con Tkinter en hilos
+    
+    def disconnect_tailscale():
+        global tailscale_running
+        try:
+            cmd = 'tailscale down'
+            result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=10)
+            if result.returncode == 0:
+                tailscale_running = False
+                # No mostrar mensaje desde hilo secundario - el estado se refleja en la UI
+            else:
+                raise Exception(result.stderr)
+        except Exception as e:
+            print(f"Error desconectando Tailscale: {e}")
+            # No mostrar error desde hilo para evitar problemas
+    
+    if tailscale_running:
+        threading.Thread(target=disconnect_tailscale, daemon=True).start()
+    else:
+        threading.Thread(target=connect_tailscale, daemon=True).start()
+
 # --- SISTEMA DE TRADUCCIONES ---
 # Diccionario de traducciones
 TRANSLATIONS = {
@@ -275,6 +742,27 @@ TRANSLATIONS = {
         'language_selection_title': 'Seleccionar Idioma',
         'select_language': 'Selecciona un idioma:',
         'could_not_save_language': 'No se pudo guardar el idioma.',
+        'tailscale_on': 'TAILSCALE: ON',
+        'tailscale_off': 'TAILSCALE: OFF',
+        'tailscale_config_title': 'Configuración Tailscale',
+        'tailscale_username': 'Usuario:',
+        'tailscale_password': 'Contraseña:',
+        'tailscale_not_configured': 'Tailscale no configurado',
+        'configure_tailscale_first': 'Configura Tailscale primero usando el botón de engranaje.',
+        'tailscale_connecting': 'Conectando a Tailscale...',
+        'tailscale_disconnecting': 'Desconectando de Tailscale...',
+        'tailscale_connected': 'Tailscale conectado correctamente.',
+        'tailscale_disconnected': 'Tailscale desconectado correctamente.',
+        'tailscale_error': 'Error al conectar/desconectar Tailscale.',
+        'tailscale_not_installed': 'Tailscale no está instalado. Instálalo desde https://tailscale.com/download',
+        'install_tailscale': 'Instalar servicio',
+        'installing_tailscale': 'Instalando Tailscale...',
+        'tailscale_install_success': 'Tailscale instalado correctamente. Reinicia la aplicación.',
+        'tailscale_install_error': 'Error al instalar Tailscale.',
+        'tailscale_installer_not_found': 'Instalador de Tailscale no encontrado en la ruta del proyecto.',
+        'tailscale_oauth_info': 'Tailscale usa autenticación OAuth (Google, Microsoft, etc.).\nAl activar Tailscale, se abrirá tu navegador para autenticarte.',
+        'tailscale_installed_info': 'Tailscale está instalado. Usa el botón TAILSCALE: ON/OFF para conectarte.',
+        'tailscale_sudo_needed': 'Tailscale requiere permisos de administrador.\n\nEjecuta una vez en la terminal:\nsudo tailscale set --operator=$USER\n\nLuego podrás usar Tailscale sin sudo.',
     },
     'en': {  # English
         'yolo_on': 'YOLO: {0} det.',
@@ -347,6 +835,28 @@ TRANSLATIONS = {
         'language_selection_title': 'Select Language',
         'select_language': 'Select a language:',
         'could_not_save_language': 'Could not save language.',
+        'tailscale_on': 'TAILSCALE: ON',
+        'tailscale_off': 'TAILSCALE: OFF',
+        'tailscale_config_title': 'Tailscale Configuration',
+        'tailscale_username': 'Username:',
+        'tailscale_password': 'Password:',
+        'tailscale_not_configured': 'Tailscale not configured',
+        'configure_tailscale_first': 'Configure Tailscale first using the gear button.',
+        'tailscale_connecting': 'Connecting to Tailscale...',
+        'tailscale_disconnecting': 'Disconnecting from Tailscale...',
+        'tailscale_connected': 'Tailscale connected successfully.',
+        'tailscale_disconnected': 'Tailscale disconnected successfully.',
+        'tailscale_error': 'Error connecting/disconnecting Tailscale.',
+        'tailscale_not_installed': 'Tailscale is not installed. Install it from https://tailscale.com/download',
+        'install_tailscale': 'Install Service',
+        'installing_tailscale': 'Installing Tailscale...',
+        'tailscale_install_success': 'Tailscale installed successfully. Restart the application.',
+        'tailscale_install_error': 'Error installing Tailscale.',
+        'tailscale_installer_not_found': 'Tailscale installer not found in project path.',
+        'tailscale_oauth_info': 'Tailscale uses OAuth authentication (Google, Microsoft, etc.).\nWhen you activate Tailscale, your browser will open for authentication.',
+        'tailscale_installed_info': 'Tailscale is installed. Use the TAILSCALE: ON/OFF button to connect.',
+        'tailscale_sudo_needed': 'Tailscale requires administrator permissions.\n\nRun once in terminal:\nsudo tailscale set --operator=$USER\n\nThen you can use Tailscale without sudo.',
+        'tailscale_sudo_needed': 'Tailscale requires administrator permissions.\n\nRun once in terminal:\nsudo tailscale set --operator=$USER\n\nThen you can use Tailscale without sudo.',
     },
     'fr': {  # French
         'yolo_on': 'YOLO: {0} dét.',
@@ -419,6 +929,27 @@ TRANSLATIONS = {
         'language_selection_title': 'Sélectionner Langue',
         'select_language': 'Sélectionnez une langue:',
         'could_not_save_language': 'Impossible d\'enregistrer la langue.',
+        'tailscale_on': 'TAILSCALE: ON',
+        'tailscale_off': 'TAILSCALE: OFF',
+        'tailscale_config_title': 'Configuration Tailscale',
+        'tailscale_username': 'Utilisateur:',
+        'tailscale_password': 'Mot de passe:',
+        'tailscale_not_configured': 'Tailscale non configuré',
+        'configure_tailscale_first': 'Configurez Tailscale d\'abord en utilisant le bouton d\'engrenage.',
+        'tailscale_connecting': 'Connexion à Tailscale...',
+        'tailscale_disconnecting': 'Déconnexion de Tailscale...',
+        'tailscale_connected': 'Tailscale connecté avec succès.',
+        'tailscale_disconnected': 'Tailscale déconnecté avec succès.',
+        'tailscale_error': 'Erreur lors de la connexion/déconnexion de Tailscale.',
+        'tailscale_not_installed': 'Tailscale n\'est pas installé. Installez-le depuis https://tailscale.com/download',
+        'install_tailscale': 'Installer le service',
+        'installing_tailscale': 'Installation de Tailscale...',
+        'tailscale_install_success': 'Tailscale installé avec succès. Redémarrez l\'application.',
+        'tailscale_install_error': 'Erreur lors de l\'installation de Tailscale.',
+        'tailscale_installer_not_found': 'Installateur Tailscale introuvable dans le chemin du projet.',
+        'tailscale_oauth_info': 'Tailscale utilise l\'authentification OAuth (Google, Microsoft, etc.).\nLorsque vous activez Tailscale, votre navigateur s\'ouvrira pour l\'authentification.',
+        'tailscale_installed_info': 'Tailscale est installé. Utilisez le bouton TAILSCALE: ON/OFF pour vous connecter.',
+        'tailscale_sudo_needed': 'Tailscale nécessite des permissions d\'administrateur.\n\nExécutez une fois dans le terminal:\nsudo tailscale set --operator=$USER\n\nEnsuite, vous pourrez utiliser Tailscale sans sudo.',
     },
     'it': {  # Italian
         'yolo_on': 'YOLO: {0} rilev.',
@@ -491,6 +1022,27 @@ TRANSLATIONS = {
         'language_selection_title': 'Seleziona Lingua',
         'select_language': 'Seleziona una lingua:',
         'could_not_save_language': 'Impossibile salvare la lingua.',
+        'tailscale_on': 'TAILSCALE: ON',
+        'tailscale_off': 'TAILSCALE: OFF',
+        'tailscale_config_title': 'Configurazione Tailscale',
+        'tailscale_username': 'Utente:',
+        'tailscale_password': 'Password:',
+        'tailscale_not_configured': 'Tailscale non configurato',
+        'configure_tailscale_first': 'Configura prima Tailscale usando il pulsante ingranaggio.',
+        'tailscale_connecting': 'Connessione a Tailscale...',
+        'tailscale_disconnecting': 'Disconnessione da Tailscale...',
+        'tailscale_connected': 'Tailscale connesso con successo.',
+        'tailscale_disconnected': 'Tailscale disconnesso con successo.',
+        'tailscale_error': 'Errore durante la connessione/disconnessione di Tailscale.',
+        'tailscale_not_installed': 'Tailscale non è installato. Installalo da https://tailscale.com/download',
+        'install_tailscale': 'Installa servizio',
+        'installing_tailscale': 'Installazione di Tailscale...',
+        'tailscale_install_success': 'Tailscale installato con successo. Riavvia l\'applicazione.',
+        'tailscale_install_error': 'Errore durante l\'installazione di Tailscale.',
+        'tailscale_installer_not_found': 'Installatore Tailscale non trovato nel percorso del progetto.',
+        'tailscale_oauth_info': 'Tailscale utilizza l\'autenticazione OAuth (Google, Microsoft, ecc.).\nQuando attivi Tailscale, il tuo browser si aprirà per l\'autenticazione.',
+        'tailscale_installed_info': 'Tailscale è installato. Usa il pulsante TAILSCALE: ON/OFF per connetterti.',
+        'tailscale_sudo_needed': 'Tailscale richiede permessi di amministratore.\n\nEsegui una volta nel terminale:\nsudo tailscale set --operator=$USER\n\nQuindi potrai usare Tailscale senza sudo.',
     },
     'pt': {  # Portuguese
         'yolo_on': 'YOLO: {0} det.',
@@ -563,6 +1115,27 @@ TRANSLATIONS = {
         'language_selection_title': 'Selecionar Idioma',
         'select_language': 'Selecione um idioma:',
         'could_not_save_language': 'Não foi possível salvar o idioma.',
+        'tailscale_on': 'TAILSCALE: ON',
+        'tailscale_off': 'TAILSCALE: OFF',
+        'tailscale_config_title': 'Configuração Tailscale',
+        'tailscale_username': 'Usuário:',
+        'tailscale_password': 'Senha:',
+        'tailscale_not_configured': 'Tailscale não configurado',
+        'configure_tailscale_first': 'Configure Tailscale primeiro usando o botão de engrenagem.',
+        'tailscale_connecting': 'Conectando ao Tailscale...',
+        'tailscale_disconnecting': 'Desconectando do Tailscale...',
+        'tailscale_connected': 'Tailscale conectado com sucesso.',
+        'tailscale_disconnected': 'Tailscale desconectado com sucesso.',
+        'tailscale_error': 'Erro ao conectar/desconectar Tailscale.',
+        'tailscale_not_installed': 'Tailscale não está instalado. Instale-o em https://tailscale.com/download',
+        'install_tailscale': 'Instalar Serviço',
+        'installing_tailscale': 'Instalando Tailscale...',
+        'tailscale_install_success': 'Tailscale instalado com sucesso. Reinicie a aplicação.',
+        'tailscale_install_error': 'Erro ao instalar Tailscale.',
+        'tailscale_installer_not_found': 'Instalador Tailscale não encontrado no caminho do projeto.',
+        'tailscale_oauth_info': 'Tailscale usa autenticação OAuth (Google, Microsoft, etc.).\nAo ativar Tailscale, seu navegador será aberto para autenticação.',
+        'tailscale_installed_info': 'Tailscale está instalado. Use o botão TAILSCALE: ON/OFF para conectar.',
+        'tailscale_sudo_needed': 'Tailscale requer permissões de administrador.\n\nExecute uma vez no terminal:\nsudo tailscale set --operator=$USER\n\nDepois poderá usar Tailscale sem sudo.',
     }
 }
 
@@ -657,10 +1230,135 @@ def show_language_selection_dialog():
     root.mainloop()
     return result["selected"]
 
+def draw_tailscale_indicator(frame, mouse_pos, click_pos):
+    """Dibuja el indicador de Tailscale."""
+    x = frame.shape[1] - 40
+    y = 110  # Debajo de DET AUDIO (y=80) + 30 píxeles
+    
+    if tailscale_running:
+        color = (0, 255, 0)
+        text = t('tailscale_on')
+    else:
+        color = (0, 0, 255)
+        text = t('tailscale_off')
+    
+    return draw_interactive_button(frame, text, x, y, 0, 0, color, mouse_pos, click_pos, align_right=True)
+
+def draw_tailscale_settings_icon(frame, mouse_pos, click_pos):
+    """Dibuja el icono PNG de ajustes para Tailscale."""
+    icon = get_yolo_settings_icon()  # Reutilizamos el mismo icono
+    if icon is None:
+        return frame, False
+
+    h, w = icon.shape[:2]
+    padding = 10
+    x2 = frame.shape[1] - 10
+    x1 = x2 - w
+    y1 = 110 - h // 2 - 5  # Posición al lado de Tailscale (y=110), subido 3 píxeles
+    y2 = y1 + h
+
+    x1 = max(0, x1)
+    y1 = max(0, y1)
+    x2 = min(frame.shape[1], x2)
+    y2 = min(frame.shape[0], y2)
+
+    roi = frame[y1:y2, x1:x2]
+    icon_resized = icon[: y2 - y1, : x2 - x1]
+
+    if icon_resized.shape[2] == 4:
+        alpha = icon_resized[:, :, 3] / 255.0
+        for c in range(3):
+            roi[:, :, c] = (1 - alpha) * roi[:, :, c] + alpha * icon_resized[:, :, c]
+    else:
+        roi[:] = icon_resized
+
+    mx, my = mouse_pos
+    is_hover = x1 <= mx <= x2 and y1 <= my <= y2
+    is_clicked = False
+    if click_pos:
+        cx_click, cy_click = click_pos
+        if x1 <= cx_click <= x2 and y1 <= cy_click <= y2:
+            is_clicked = True
+
+    if is_hover:
+        cv2.rectangle(frame, (x1, y1), (x2, y2), (255, 255, 255), 1, cv2.LINE_AA)
+
+    return frame, is_clicked
+
+def show_tailscale_config_dialog():
+    """Muestra el diálogo de configuración de Tailscale."""
+    root = tk.Tk()
+    root.title(t('tailscale_config_title'))
+    root.attributes("-topmost", True)
+    root.resizable(False, False)
+    
+    main_frame = ttk.Frame(root, padding=20)
+    main_frame.pack(fill="both", expand=True)
+    
+    # Información sobre autenticación OAuth
+    info_text = t('tailscale_oauth_info')
+    info_label = ttk.Label(main_frame, text=info_text, font=("Arial", 9), foreground="gray", wraplength=300, justify="left")
+    info_label.pack(anchor="w", pady=(0, 15))
+    
+    # Botón de instalación (si Tailscale no está instalado y el instalador existe)
+    install_btn_frame = None
+    if not tailscale_installed():
+        installer_exists = False
+        if os.name == 'nt':  # Windows
+            installer_exists = os.path.exists(TAILSCALE_INSTALLER_WIN)
+        else:  # Linux
+            installer_exists = os.path.exists(TAILSCALE_INSTALLER_LINUX)
+        
+        if installer_exists:
+            install_btn_frame = ttk.Frame(main_frame)
+            install_btn_frame.pack(fill="x", pady=(0, 15))
+            
+            def on_install():
+                if messagebox.askyesno(t('install_tailscale'), t('installing_tailscale')):
+                    install_tailscale()
+            
+            ttk.Button(install_btn_frame, text=t('install_tailscale'), command=on_install, width=25).pack()
+        else:
+            # Si no está instalado y no hay instalador, mostrar mensaje
+            no_installer_label = ttk.Label(main_frame, text=t('tailscale_not_installed'), font=("Arial", 9), foreground="orange", wraplength=300, justify="left")
+            no_installer_label.pack(anchor="w", pady=(0, 15))
+    else:
+        # Si está instalado, mostrar estado
+        status_text = t('tailscale_installed_info')
+        status_label = ttk.Label(main_frame, text=status_text, font=("Arial", 9), foreground="green", wraplength=300, justify="left")
+        status_label.pack(anchor="w", pady=(0, 15))
+    
+    def on_close():
+        root.destroy()
+    
+    btn_frame = ttk.Frame(main_frame)
+    btn_frame.pack(fill="x", pady=(15, 0))
+    
+    ttk.Button(btn_frame, text=t('ok'), command=on_close, width=12).pack(side="left", padx=5)
+    
+    root.mainloop()
+    return True
+
+def open_tailscale_options_dialog():
+    """Abre la ventana de opciones de Tailscale en un hilo aparte."""
+    global tailscale_options_thread
+    if tailscale_options_thread and tailscale_options_thread.is_alive():
+        return
+
+    def runner():
+        global tailscale_options_thread
+        try:
+            show_tailscale_config_dialog()
+        finally:
+            tailscale_options_thread = None
+
+    tailscale_options_thread = threading.Thread(target=runner, daemon=True)
+    tailscale_options_thread.start()
+
 def draw_language_indicator(frame, mouse_pos, click_pos):
     """Dibuja el indicador de idioma."""
     x = frame.shape[1] - 40
-    y = 110  # Debajo de DET AUDIO (y=80) + 30 píxeles
+    y = 140  # Debajo de Tailscale (y=110) + 30 píxeles
     
     text = t('language_app')
     color = (255, 255, 255)  # Blanco
@@ -694,6 +1392,11 @@ window_name = 'ADAS3 Server'
 
 # Cargar idioma al inicio
 cargar_idioma()
+
+# Cargar configuración de Tailscale al inicio
+cargar_tailscale_config()
+# Verificar estado real de Tailscale al iniciar
+verificar_estado_tailscale()
 
 print(f"Iniciando con IP guardada: {base_url}")
 
@@ -1289,6 +1992,8 @@ def tinysa_hardware_worker():
         
         if tinysa_http_response.status_code != 200:
             print(f"[TINYSA] Error conectando: HTTP {tinysa_http_response.status_code}")
+            tinysa_running = False
+            tinysa_use_http = False
             return
         
         print("[TINYSA] Conectado al stream de datos")
@@ -1399,7 +2104,9 @@ def tinysa_hardware_worker():
                 time.sleep(0.1)
 
     except Exception as e:
-        print(f"[TINYSA] Error crítico en hardware worker: {e}")
+        print(f"[TINYSA] Error crítico en hardware worker HTTP: {e}")
+        tinysa_running = False
+        tinysa_use_http = False
     finally:
         tinysa_current_label = ""
         try:
@@ -1408,6 +2115,8 @@ def tinysa_hardware_worker():
         except:
             pass
         tinysa_http_response = None
+    
+    print("[TINYSA] Hardware Worker HTTP finalizado")
 
     print("[TINYSA] Hardware Worker HTTP finalizado")
 
@@ -1818,6 +2527,39 @@ def start_tinysa_with_sequence(sequence):
                     print("[TINYSA] Error iniciando scanning en servidor")
                     return False
 
+                # Verificar que TinySA esté realmente conectado en el servidor Android
+                try:
+                    status_url = base_url + "/tinysa/status"
+                    response = requests.get(status_url, timeout=2)
+                    if response.status_code == 200:
+                        data = response.json()
+                        if not data.get("connected", False):
+                            print("[TINYSA] TinySA no está conectado en el servidor Android")
+                            tinysa_running = False
+                            tinysa_use_http = False
+                            def show_warning():
+                                root = Tk()
+                                root.withdraw()
+                                root.attributes("-topmost", True)
+                                messagebox.showwarning(
+                                    t('tinysa_not_configured'),
+                                    t('tinysa_not_detected')
+                                )
+                                root.destroy()
+                            threading.Thread(target=show_warning, daemon=True).start()
+                            return False
+                    else:
+                        print("[TINYSA] Error verificando estado en servidor Android")
+                        tinysa_running = False
+                        tinysa_use_http = False
+                        return False
+                except Exception as e:
+                    print(f"[TINYSA] Error verificando estado: {e}")
+                    tinysa_running = False
+                    tinysa_use_http = False
+                    return False
+
+                # Solo establecer tinysa_running = True después de verificar que está conectado
                 tinysa_running = True
 
                 with tinysa_data_lock:
@@ -2408,11 +3150,18 @@ def apply_yolo_model(new_path, save_default=False, selected_slot=None):
     """Configura el modelo YOLO a usar y marca recarga si estaba activo."""
     global yolo_model_path, yolo_default_slot, yolo_model, yolo_model_slots, yolo_reload_requested
 
-    if not new_path or not os.path.exists(new_path):
+    if not new_path:
         print(f"[YOLO] Ruta de modelo inválida: {new_path}")
         return False
+    
+    # Normalizar la ruta del modelo
+    normalized_path = normalize_model_path(new_path)
+    
+    if not normalized_path or not os.path.exists(normalized_path):
+        print(f"[YOLO] Ruta de modelo inválida o archivo no encontrado: {new_path}")
+        return False
 
-    yolo_model_path = new_path
+    yolo_model_path = normalized_path
 
     if save_default and selected_slot is not None:
         yolo_default_slot = selected_slot
@@ -2879,51 +3628,103 @@ def overlay_audio_spectrogram(frame):
 def stream_audio():
     global audio_stream, stop_audio_thread
     
-    try:
-        with requests.get(audio_url, stream=True, timeout=10, headers=headers) as r:
-            if r.status_code != 200:
-                return
+    max_retries = 5
+    retry_delay = 3  # Aumentar el tiempo de espera para que el servidor limpie conexiones anteriores
+    
+    for attempt in range(max_retries):
+        if stop_audio_thread:
+            return
             
-            header = r.raw.read(44)
-            
-            audio_stream = p.open(format=pyaudio.paInt16,
-                                  channels=1,
-                                  rate=44100,
-                                  output=True,
-                                  frames_per_buffer=CHUNK)
-            
-            for chunk in r.iter_content(chunk_size=CHUNK):
-                if stop_audio_thread:
-                    break
-                if chunk and audio_stream:
-                    try:
-                        audio_stream.write(chunk)
-                        
-                        if audio_detection_enabled:
-                            try:
-                                audio_buffer.put_nowait(chunk)
-                            except queue.Full:
-                                pass
-                                
-                    except Exception as e:
+        try:
+            # Usar timeout más largo: (connect_timeout, read_timeout)
+            # connect_timeout: tiempo para establecer conexión
+            # read_timeout: tiempo entre chunks de datos
+            with requests.get(audio_url, stream=True, timeout=(15, 30), headers=headers) as r:
+                if r.status_code == 503:
+                    # Servicio no disponible - probablemente hay clientes anteriores que no se han limpiado
+                    # Esperar más tiempo para que el servidor detecte las desconexiones
+                    if attempt < max_retries - 1:
+                        wait_time = retry_delay + (attempt * 1)  # Aumentar el tiempo de espera progresivamente
+                        print(f"Error audio: Servicio no disponible (HTTP 503). Esperando {wait_time} segundos para que el servidor limpie conexiones anteriores... ({attempt + 1}/{max_retries})")
+                        time.sleep(wait_time)
+                        continue
+                    else:
+                        print("Error audio: Servicio no disponible (HTTP 503) después de varios intentos.")
+                        print("Sugerencia: Detén y vuelve a iniciar el streaming en la app Android, o espera unos segundos y vuelve a intentar.")
+                        return
+                elif r.status_code != 200:
+                    print(f"Error audio: HTTP {r.status_code}")
+                    return
+                
+                # El servidor Android envía PCM crudo directamente, sin header WAV
+                # Inicializar PyAudio antes de leer datos
+                audio_stream = p.open(format=pyaudio.paInt16,
+                                      channels=1,
+                                      rate=44100,
+                                      output=True,
+                                      frames_per_buffer=CHUNK)
+                
+                # Leer chunks de PCM directamente (el timeout ya está configurado en la petición)
+                for chunk in r.iter_content(chunk_size=CHUNK):
+                    if stop_audio_thread:
                         break
+                    if chunk and audio_stream:
+                        try:
+                            audio_stream.write(chunk)
+                            
+                            if audio_detection_enabled:
+                                try:
+                                    audio_buffer.put_nowait(chunk)
+                                except queue.Full:
+                                    pass
+                                    
+                        except Exception as e:
+                            print(f"Error audio escribiendo chunk: {e}")
+                            break
+                
+                # Si llegamos aquí, la conexión se estableció correctamente
+                break
                         
-    except Exception as e:
-        print(f"Error audio: {e}")
-    finally:
-        if audio_stream:
-            try:
-                audio_stream.stop_stream()
-                audio_stream.close()
-                audio_stream = None
-            except:
-                pass
+        except requests.exceptions.Timeout as e:
+            if attempt < max_retries - 1:
+                print(f"Error audio: Timeout. Reintentando en {retry_delay} segundos... ({attempt + 1}/{max_retries})")
+                time.sleep(retry_delay)
+                continue
+            else:
+                print(f"Error audio: Timeout después de {max_retries} intentos - {e}")
+        except requests.exceptions.ConnectionError as e:
+            if attempt < max_retries - 1:
+                print(f"Error audio: No se pudo conectar. Reintentando en {retry_delay} segundos... ({attempt + 1}/{max_retries})")
+                time.sleep(retry_delay)
+                continue
+            else:
+                print(f"Error audio: No se pudo conectar al servidor después de {max_retries} intentos - {e}")
+        except Exception as e:
+            print(f"Error audio: {e}")
+            if attempt < max_retries - 1:
+                time.sleep(retry_delay)
+                continue
+            break
+    
+    # Limpiar recursos
+    if audio_stream:
+        try:
+            audio_stream.stop_stream()
+            audio_stream.close()
+            audio_stream = None
+        except:
+            pass
 
 def start_audio():
     global audio_thread, stop_audio_thread, audio_enabled
     
+    # Si hay un hilo activo, detenerlo primero y esperar a que termine
     if audio_thread is not None and audio_thread.is_alive():
-        return
+        stop_audio_thread = True
+        audio_thread.join(timeout=3)
+    
+    # Esperar un poco para que el servidor Android detecte la desconexión anterior
+    time.sleep(1)
     
     stop_audio_thread = False
     audio_enabled = True
@@ -3586,11 +4387,14 @@ def show_yolo_options_window():
         if not path:
             messagebox.showerror(t('error'), t('model_empty', slot_idx + 1))
             return
-        if not os.path.exists(path):
+        
+        # Normalizar la ruta antes de verificar existencia
+        normalized_path = normalize_model_path(path)
+        if not normalized_path or not os.path.exists(normalized_path):
             messagebox.showerror(t('error'), t('file_not_found', path))
             return
 
-        if apply_yolo_model(path, save_default=save_default, selected_slot=slot_idx if save_default else None):
+        if apply_yolo_model(normalized_path, save_default=save_default, selected_slot=slot_idx if save_default else None):
             status_var.set(t('model_updated'))
             root.destroy()
 
@@ -3960,6 +4764,16 @@ while not stop_program:
                 threading.Thread(target=show_activate_audio, daemon=True).start()
                 current_click = None
         
+        # Tailscale
+        frame_negro, tailscale_clicked = draw_tailscale_indicator(frame_negro, current_mouse, current_click)
+        if tailscale_clicked:
+            toggle_tailscale()
+            current_click = None
+        frame_negro, tailscale_settings_clicked = draw_tailscale_settings_icon(frame_negro, current_mouse, current_click)
+        if tailscale_settings_clicked:
+            open_tailscale_options_dialog()
+            current_click = None
+        
         # Idioma APP
         frame_negro, language_clicked = draw_language_indicator(frame_negro, current_mouse, current_click)
         if language_clicked:
@@ -4114,7 +4928,17 @@ while not stop_program:
                 threading.Thread(target=show_activate_audio, daemon=True).start()
                 current_click = None
 
-        # 5. Idioma APP
+        # 5. Tailscale
+        frame, tailscale_clicked = draw_tailscale_indicator(frame, current_mouse, current_click)
+        if tailscale_clicked:
+            toggle_tailscale()
+            current_click = None
+        frame, tailscale_settings_clicked = draw_tailscale_settings_icon(frame, current_mouse, current_click)
+        if tailscale_settings_clicked:
+            open_tailscale_options_dialog()
+            current_click = None
+
+        # 6. Idioma APP
         frame, language_clicked = draw_language_indicator(frame, current_mouse, current_click)
         if language_clicked:
             def show_language_dialog():
