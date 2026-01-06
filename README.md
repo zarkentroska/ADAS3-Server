@@ -39,16 +39,18 @@ This application is part of a client-server architecture project that works toge
 - **Real-time audio streaming** from Android devices
 - **TensorFlow-based audio analysis** for drone sound detection
 - **Training dataset**: The drone audio model has been trained using the [DroneAudioDataset](https://github.com/saraalemadi/DroneAudioDataset) by [saraalemadi](https://github.com/saraalemadi) via TensorFlow
+
+```bibtex
+Sara A Al-Emadi, Abdulla K Al-Ali, Abdulaziz Al-Ali, & Amr Mohamed (2019).
+Audio Based Drone Detection and Identification using Deep Learning. In IWCMC 2019 Vehicular Symposium (IWCMC-VehicularCom 2019).
+```
+
 - **Confidence threshold**: Adjustable confidence parameters for detection sensitivity
 - **PCM audio processing** with configurable sample rates
 - **Audio normalization** using pre-computed statistics
 - **Quick enable/disable** via UI button
 - **Visual feedback** with volume/mute icons
 - **Future enhancements**: Future versions will investigate the possibility of allowing users to load other models for drone detection or other sound-emitting objects based on different datasets
-
-```bibtex
-Sara A Al-Emadi, Abdulla K Al-Ali, Abdulaziz Al-Ali, & Amr Mohamed (2019). Audio Based Drone Detection and Identification using Deep Learning. In IWCMC 2019 Vehicular Symposium (IWCMC-VehicularCom 2019).
-```
 
 ### 📡 RF spectrum analysis (TinySA integration)
 - **TinySA Ultra device integration** via USB or HTTP (through Android)
