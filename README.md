@@ -8,6 +8,9 @@ Version: 0.5 Alpha
   <a href="https://www.gnu.org/software/bash/">
     <img src="https://img.shields.io/badge/Shell-Bash-4EAA25?style=flat-square&logo=gnu-bash&logoColor=white" alt="Bash">
   </a>
+  <a href="https://github.com/zarkentroska/ADAS3-Server/releases">
+    <img src="https://img.shields.io/badge/Downloads-Latest-6B7280?style=flat-square&logoColor=white&labelColor=6B7280&color=22C55E" alt="Downloads">
+  </a>
 </div>
 
 ADAS3 Server is a real-time drone detection system that combines video analysis, audio processing, and RF spectrum monitoring. It works in conjunction with the ADAS3 Android Client to provide a complete solution for detecting and monitoring unmanned aerial vehicles (UAVs) in real-time.
@@ -110,6 +113,12 @@ Full support for 5 languages:
 ## 🚀 Installation
 
 ### Option 1: Precompiled Packages
+
+<div align="center">
+  <a href="https://github.com/zarkentroska/ADAS3-Server/releases/latest">
+    <img src="https://user-images.githubusercontent.com/69304392/148696068-0cfea65d-b18f-4685-82b5-329a330b1c0d.png" alt="Get it on GitHub" width="200">
+  </a>
+</div>
 
 #### Windows
 1. Download `ADAS3-Server-0.5Alpha-win-x64.exe` from [Releases](https://github.com/zarkentroska/ADAS3-Server/releases)
