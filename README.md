@@ -43,12 +43,14 @@ This application is part of a client-server architecture project that works toge
 
 ### 📡 RF Spectrum Analysis (TinySA Integration)
 - **TinySA Ultra device integration** via USB or HTTP (through Android)
+- **Automatic detection**: TinySA is detected on-the-fly when connected
 - **Real-time spectrum visualization** overlaid on video
 - **Multiple scanning modes**:
-  - Quick scan (100-350 MHz)
-  - Full scan (100-350 MHz)
-  - Custom frequency ranges
-  - Advanced intervals with custom configurations
+  - **2.4 GHz band**: Optimized for drone detection at 2.4 GHz
+  - **5.8 GHz band**: Optimized for drone detection at 5.8 GHz
+  - **Mixed sweeps**: Alternates between 2.4 GHz and 5.8 GHz every 10 sweeps
+  - **Custom frequency range**: User-defined frequency ranges
+  - **Advanced intervals**: Custom configurations with multiple frequency intervals
 - **Automatic frequency range detection**
 - **Graph overlay** with frequency and dBm scales
 - **Configurable scanning intervals**
@@ -60,6 +62,7 @@ This application is part of a client-server architecture project that works toge
 - **OAuth-based authentication** flow
 - **Service status monitoring**
 - **Cross-platform support** (Windows/Linux)
+- **ADB support**: ADB drivers are included and automatically detect wired Android connections when devices are connected via USB
 
 ### 🎨 User Interface
 - **OpenCV-based GUI** with real-time video display
