@@ -46,7 +46,6 @@ This application is part of a client-server architecture project that works toge
 - **Visual feedback** with volume/mute icons
 - **Future enhancements**: Future versions will investigate the possibility of allowing users to load other models for drone detection or other sound-emitting objects based on different datasets
 
-**Citation**:
 ```bibtex
 @INPROCEEDINGS{AlEm1906:Audio,
   AUTHOR="Sara A Al-Emadi and Abdulla K Al-Ali and Abdulaziz Al-Ali and Amr Mohamed",
