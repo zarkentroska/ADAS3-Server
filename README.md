@@ -1,6 +1,15 @@
 # ADAS3 Server
 Version: 0.5 Alpha
 
+<div align="left">
+  <a href="https://www.python.org/">
+    <img src="https://img.shields.io/badge/Python-3.8+-3776AB?style=flat-square&logo=python&logoColor=white" alt="Python 3.8+">
+  </a>
+  <a href="https://www.gnu.org/software/bash/">
+    <img src="https://img.shields.io/badge/Shell-Bash-4EAA25?style=flat-square&logo=gnu-bash&logoColor=white" alt="Bash">
+  </a>
+</div>
+
 ADAS3 Server is a real-time drone detection system that combines video analysis, audio processing, and RF spectrum monitoring. It works in conjunction with the ADAS3 Android Client to provide a complete solution for detecting and monitoring unmanned aerial vehicles (UAVs) in real-time.
 
 This application is part of a client-server architecture project that works together with ADAS3 Android Client. The ultimate goal of this combined project is drone detection for various applications, providing a complete solution for monitoring and detecting unmanned aerial vehicles (UAVs) in real-time.
