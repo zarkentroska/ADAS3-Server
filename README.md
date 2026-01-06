@@ -9,7 +9,7 @@ Version: 0.5 Alpha
     <img src="https://img.shields.io/badge/Shell-Bash-4EAA25?style=flat-square&logo=gnu-bash&logoColor=white" alt="Bash">
   </a>
   <a href="https://github.com/zarkentroska/ADAS3-Server/releases">
-    <img src="https://img.shields.io/badge/Downloads-Latest-6B7280?style=flat-square&logoColor=white&labelColor=6B7280&color=22C55E" alt="Downloads">
+    <img src="https://img.shields.io/github/downloads/zarkentroska/ADAS3-Server/total?style=flat-square&labelColor=6B7280&color=22C55E&label=Downloads" alt="Downloads">
   </a>
 </div>
 
