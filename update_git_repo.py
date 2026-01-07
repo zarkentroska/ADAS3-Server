@@ -106,56 +106,129 @@ else:
     print("  ⚠ Error agregando cambios")
 
 # 5. Verificar qué se va a commitear
-print("\n[5/6] Verificando cambios para commit...")
+print("\n[5/7] Verificando cambios para commit...")
 status = run_git_command(["status", "--short"], check=False)
+has_changes = False
 if status and status.stdout and status.stdout.strip():
-    print("  Cambios a commitear:")
+    print("  Cambios detectados:")
     for line in status.stdout.strip().split('\n'):
         if line.strip():
             print(f"    {line}")
+            has_changes = True
 else:
-    print("  ℹ No hay cambios para commitear")
-    print("\n  ✓ Repositorio ya está actualizado")
-    sys.exit(0)
+    print("  ℹ No hay cambios nuevos para commitear")
+    has_changes = False
 
-# 6. Commit y Push
-print("\n[6/6] Haciendo commit y push...")
+# Verificar si hay cambios sin commitear que puedan bloquear el rebase
+unstaged = run_git_command(["diff", "--name-only"], check=False)
+staged = run_git_command(["diff", "--cached", "--name-only"], check=False)
+if (unstaged and unstaged.stdout and unstaged.stdout.strip()) or (staged and staged.stdout and staged.stdout.strip()):
+    print("  ℹ Hay cambios sin commitear, asegurándose de que todo esté commiteado...")
+    has_changes = True
+
+# 6. Commit (si hay cambios)
+print("\n[6/7] Haciendo commit...")
 commit_msg = "Actualización: mejoras en Tailscale, optimizaciones de build, nuevos scripts y configuración"
 
-# Commit
-result = run_git_command(["commit", "-m", commit_msg], check=False)
-if result and result.returncode == 0:
-    print("  ✓ Commit realizado")
-    if result.stdout:
-        print(f"    {result.stdout.strip()[:100]}")
-else:
-    if result and "nothing to commit" in result.stdout.lower():
-        print("  ℹ No hay cambios para commitear")
+if has_changes:
+    # Asegurarse de que todos los cambios estén agregados
+    result = run_git_command(["add", "-A"], check=False)
+    
+    # Commit
+    result = run_git_command(["commit", "-m", commit_msg], check=False)
+    if result and result.returncode == 0:
+        print("  ✓ Commit realizado")
+        if result.stdout:
+            print(f"    {result.stdout.strip()[:100]}")
     else:
-        print("  ⚠ Error en commit")
-        if result and result.stderr:
-            print(f"    {result.stderr.strip()[:200]}")
+        if result and result.stdout and "nothing to commit" in result.stdout.lower():
+            print("  ℹ No hay cambios para commitear")
+        else:
+            print("  ⚠ Error en commit")
+            if result and result.stderr:
+                print(f"    {result.stderr.strip()[:200]}")
+else:
+    print("  ℹ No hay cambios nuevos para commitear")
+
+# 7. Pull y Push
+print("\n[7/7] Actualizando desde remoto y haciendo push...")
+
+# Detectar la rama actual
+branch_result = run_git_command(["rev-parse", "--abbrev-ref", "HEAD"], check=False)
+current_branch = None
+if branch_result and branch_result.returncode == 0:
+    current_branch = branch_result.stdout.strip()
+    print(f"  ✓ Rama actual: {current_branch}")
+else:
+    # Intentar método alternativo
+    branch_result = run_git_command(["branch", "--show-current"], check=False)
+    if branch_result and branch_result.returncode == 0:
+        current_branch = branch_result.stdout.strip()
+        print(f"  ✓ Rama actual: {current_branch}")
+
+if not current_branch:
+    # Intentar con ramas comunes
+    for branch in ["main", "master"]:
+        branch_result = run_git_command(["rev-parse", "--verify", f"origin/{branch}"], check=False)
+        if branch_result and branch_result.returncode == 0:
+            current_branch = branch
+            print(f"  ✓ Usando rama: {current_branch}")
+            break
+
+# Pull primero para sincronizar con rebase para evitar conflictos
+if current_branch:
+    print(f"\n  Haciendo pull con rebase desde origin/{current_branch}...")
+    # Primero fetch para obtener cambios remotos
+    fetch_result = run_git_command(["fetch", "origin", current_branch], check=False)
+    
+    # Luego hacer rebase para reconciliar ramas divergentes
+    result = run_git_command(["pull", "--rebase", "origin", current_branch], check=False)
+    if result and result.returncode == 0:
+        print(f"  ✓ Pull con rebase exitoso desde origin/{current_branch}")
+        if result.stdout:
+            output = result.stdout.strip()
+            if "Already up to date" in output or "ya está actualizado" in output.lower() or "current branch is up to date" in output.lower():
+                print("    (Ya estaba actualizado)")
+            else:
+                print(f"    {output[:200]}")
+    else:
+        # Si el rebase falla, intentar merge
+        print("  Rebase falló, intentando merge...")
+        result = run_git_command(["pull", "--no-rebase", "origin", current_branch], check=False)
+        if result and result.returncode == 0:
+            print(f"  ✓ Pull con merge exitoso")
+        else:
+            print("  ⚠ Error en pull (puede haber conflictos)")
+            if result and result.stderr:
+                stderr = result.stderr.strip()
+                print(f"    {stderr[:300]}")
+                if "conflict" in stderr.lower() or "conflicto" in stderr.lower():
+                    print("\n  ⚠ Hay conflictos que necesitan resolverse manualmente")
+                    print("  Ejecuta manualmente:")
+                    print(f"    git pull --rebase origin {current_branch}")
+                    print("    (resuelve conflictos si los hay)")
+                    print(f"    git push origin {current_branch}")
 
 # Push
 print("\n  Haciendo push...")
-result = run_git_command(["push"], check=False)
-if result and result.returncode == 0:
-    print("  ✓ Push realizado exitosamente")
-    if result.stdout:
-        for line in result.stdout.strip().split('\n'):
-            if line.strip() and not line.startswith('Enumerating'):
-                print(f"    {line}")
-else:
-    # Intentar con origin main/master
-    for branch in ["main", "master"]:
-        result = run_git_command(["push", "origin", branch], check=False)
-        if result and result.returncode == 0:
-            print(f"  ✓ Push realizado a origin/{branch}")
-            break
+if current_branch:
+    result = run_git_command(["push", "origin", current_branch], check=False)
+    if result and result.returncode == 0:
+        print(f"  ✓ Push realizado exitosamente a origin/{current_branch}")
+        if result.stdout:
+            for line in result.stdout.strip().split('\n'):
+                if line.strip() and not line.startswith('Enumerating'):
+                    print(f"    {line}")
     else:
         print("  ⚠ Error en push")
         if result and result.stderr:
             print(f"    {result.stderr.strip()[:200]}")
+        print("\n  Sugerencia: Puede haber conflictos. Intenta ejecutar:")
+        print(f"    git pull origin {current_branch}")
+        print(f"    git push origin {current_branch}")
+else:
+    print("  ⚠ No se pudo detectar la rama actual")
+    print("  Ejecuta manualmente: git pull && git push")
 
 print("\n" + "="*70)
 print("  ¡COMPLETADO!")
