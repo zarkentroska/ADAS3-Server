@@ -1,3 +1,28 @@
+import os
+import sys
+
+# Forzar CPU-only para PyTorch cuando se ejecuta como ejecutable compilado sin GPU
+# Solo en Linux (CPU-only). En Windows mantener GPU completa
+# Esto evita que PyTorch intente cargar librerías CUDA que no están disponibles
+# Debe hacerse ANTES de importar torch/ultralytics
+if getattr(sys, 'frozen', False) and sys.platform != 'win32':  # Solo en Linux
+    # Ejecutable compilado en Linux - verificar si las librerías CUDA existen
+    base_dir = getattr(sys, '_MEIPASS', os.path.dirname(os.path.abspath(__file__)))
+    cuda_libs_exist = (
+        os.path.exists(os.path.join(base_dir, 'torch', 'lib', 'libtorch_cuda.so')) or
+        os.path.exists(os.path.join(base_dir, 'torch', 'lib', 'libc10_cuda.so'))
+    )
+    
+    if not cuda_libs_exist:
+        # No hay librerías CUDA, forzar CPU ANTES de importar PyTorch (solo Linux)
+        os.environ['CUDA_VISIBLE_DEVICES'] = '-1'  # TensorFlow: deshabilitar GPU
+        os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'   # Reducir logs de TensorFlow
+        # PyTorch: forzar CPU evitando carga de librerías CUDA
+        os.environ['TORCH_CUDA_ARCH_LIST'] = ''    # No compilar kernels CUDA
+        # Evitar que PyTorch intente cargar CUDA
+        os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:512'
+        print("[CONFIG] Modo CPU-only activado (sin librerías CUDA en el ejecutable)")
+
 import cv2
 import time
 import numpy as np
@@ -8,9 +33,34 @@ import tkinter as tk
 from tkinter import Tk, simpledialog, messagebox, filedialog
 from tkinter import ttk
 import json
-import os
+
+# Nota: Las variables de entorno ya se configuraron arriba antes de importar torch
+
+# Configurar XLA solo si no estamos forzando CPU
+if os.environ.get('CUDA_VISIBLE_DEVICES', '') != '-1':
+    os.environ['XLA_FLAGS'] = '--xla_gpu_unsafe_fallback_to_driver_on_ptxas_not_found=true'
+    # --- FIX PARA TENSORFLOW / LIBDEVICE ---
+    # Forzamos a XLA a usar el directorio del toolkit del sistema
+    # que tiene la estructura correcta (nvvm/libdevice/libdevice.10.bc)
+    possible_cuda_paths = [
+        "/usr/lib/nvidia-cuda-toolkit",
+        "/usr/lib/cuda",
+        "/usr"
+    ]
+
+    for path in possible_cuda_paths:
+        # Verificamos si existe la estructura que TensorFlow exige
+        if os.path.exists(os.path.join(path, "nvvm/libdevice/libdevice.10.bc")):
+            print(f"[CONFIG] Configurando XLA CUDA DIR a: {path}")
+            os.environ['XLA_FLAGS'] = f"--xla_gpu_cuda_data_dir={path}"
+            break
+else:
+    # CPU-only: no configurar CUDA
+    print("[CONFIG] Modo CPU-only activado (sin GPU)")
+    os.environ['XLA_FLAGS'] = '--xla_gpu_force_compilation_parallelism=1'
 import subprocess
 import shutil
+import webbrowser
 import matplotlib
 # Configurar backend no interactivo para hilos (CRÍTICO para evitar crasheos)
 matplotlib.use('Agg')
@@ -338,7 +388,9 @@ def verificar_estado_tailscale():
         return False
     
     try:
-        status_cmd = 'tailscale status'
+        tailscale_cmd = get_tailscale_path()
+        is_windows = os.name == 'nt'
+        status_cmd = f'"{tailscale_cmd}" status' if is_windows else f'{tailscale_cmd} status'
         status_result = subprocess.run(status_cmd, shell=True, capture_output=True, text=True, timeout=5)
         
         if status_result.returncode == 0:
@@ -353,6 +405,81 @@ def verificar_estado_tailscale():
         print(f"Error verificando estado de Tailscale: {e}")
         tailscale_running = False
         return False
+
+def get_tailscale_username():
+    """Obtiene el nombre de usuario de Tailscale"""
+    try:
+        tailscale_cmd = get_tailscale_path()
+        is_windows = os.name == 'nt'
+        cmd = f'"{tailscale_cmd}" whoami' if is_windows else f'{tailscale_cmd} whoami'
+        result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=5)
+        if result.returncode == 0 and result.stdout.strip():
+            return result.stdout.strip()
+    except:
+        pass
+    return None
+
+def get_tailscale_ip():
+    """Obtiene la IP de Tailscale de este dispositivo"""
+    try:
+        tailscale_cmd = get_tailscale_path()
+        is_windows = os.name == 'nt'
+        cmd = f'"{tailscale_cmd}" ip -4' if is_windows else f'{tailscale_cmd} ip -4'
+        result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=5)
+        if result.returncode == 0 and result.stdout.strip():
+            return result.stdout.strip()
+    except:
+        pass
+    return None
+
+def get_tailscale_connected_devices():
+    """Obtiene la lista de dispositivos conectados (online) de Tailscale"""
+    devices = []
+    try:
+        tailscale_cmd = get_tailscale_path()
+        is_windows = os.name == 'nt'
+        cmd = f'"{tailscale_cmd}" status' if is_windows else f'{tailscale_cmd} status'
+        result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=5)
+        if result.returncode == 0 and result.stdout:
+            lines = result.stdout.strip().split('\n')
+            for line in lines:
+                # Ignorar líneas vacías o que no contengan IPs
+                if not line.strip() or not line[0].isdigit():
+                    continue
+                
+                # Verificar que la línea no contenga "offline"
+                if 'offline' in line.lower():
+                    continue
+                
+                # Extraer IP y nombre del dispositivo
+                # Formato: "100.66.87.40     zarkentroska-2       kadifer1993@  linux    -"
+                parts = line.split()
+                if len(parts) >= 2:
+                    ip = parts[0].strip()
+                    device_name = parts[1].strip()
+                    # Verificar que la IP tiene formato válido
+                    if '.' in ip and len(ip.split('.')) == 4:
+                        devices.append({'ip': ip, 'name': device_name})
+    except Exception as e:
+        print(f"Error obteniendo dispositivos de Tailscale: {e}")
+    return devices
+
+def get_tailscale_path():
+    """Obtiene la ruta completa del ejecutable de Tailscale"""
+    if os.name == 'nt':  # Windows
+        # Posibles ubicaciones de Tailscale en Windows
+        possible_paths = [
+            r'C:\Program Files\Tailscale\tailscale.exe',
+            r'C:\Program Files (x86)\Tailscale\tailscale.exe',
+            os.path.expanduser(r'~\AppData\Local\Tailscale\tailscale.exe'),
+        ]
+        for path in possible_paths:
+            if os.path.exists(path):
+                return path
+        # Si no se encuentra, intentar con 'tailscale' del PATH
+        return 'tailscale'
+    else:  # Linux/Mac
+        return 'tailscale'
 
 def tailscale_installed():
     """Verifica si Tailscale está instalado"""
@@ -498,8 +625,10 @@ def install_tailscale():
 def toggle_tailscale():
     """Activa o desactiva Tailscale"""
     global tailscale_running
+    print("[TAILSCALE] toggle_tailscale() llamado")
     
     if not tailscale_installed():
+        print("[TAILSCALE] Tailscale no está instalado")
         def show_not_installed():
             root = Tk()
             root.withdraw()
@@ -511,139 +640,110 @@ def toggle_tailscale():
     
     def connect_tailscale():
         global tailscale_running
+        print("[TAILSCALE] connect_tailscale() iniciado")
+        is_windows = os.name == 'nt'
+        
+        # Obtener ruta completa de Tailscale
+        tailscale_cmd = get_tailscale_path()
+        print(f"[TAILSCALE] Usando comando: {tailscale_cmd}")
+        
         try:
             # Verificar estado actual de Tailscale
-            status_cmd = 'tailscale status'
+            print("[TAILSCALE] Verificando estado actual...")
+            status_cmd = f'"{tailscale_cmd}" status' if is_windows else f'{tailscale_cmd} status'
             status_result = subprocess.run(status_cmd, shell=True, capture_output=True, text=True, timeout=5)
+            print(f"[TAILSCALE] tailscale status returncode: {status_result.returncode}")
+            print(f"[TAILSCALE] tailscale status stdout: {status_result.stdout[:200]}")
+            
+            # Extraer URL del status si está disponible
+            auth_url = None
+            import re
+            if status_result.stdout:
+                url_match = re.search(r'https://login\.tailscale\.com/a/[^\s\n]+', status_result.stdout)
+                if url_match:
+                    auth_url = url_match.group(0).strip()
+                    print(f"[TAILSCALE] URL encontrada en tailscale status: {auth_url}")
             
             # Si ya está conectado, no hacer nada
             if status_result.returncode == 0:
                 if 'Logged in' in status_result.stdout or '100.' in status_result.stdout:
+                    print("[TAILSCALE] Ya está conectado")
                     tailscale_running = True
-                    # Ya está conectado, no mostrar mensaje desde hilo secundario
-                    # El estado se reflejará automáticamente en la UI
                     return
             
-            # Ejecutar tailscale up capturando stderr para detectar errores de permisos
-            cmd = 'tailscale up'
-            
-            # Ejecutar capturando stderr para detectar errores
-            import tempfile
-            with tempfile.NamedTemporaryFile(mode='w+', delete=False, suffix='.log') as err_file:
-                err_path = err_file.name
-            
-            try:
-                process = subprocess.Popen(
-                    cmd, 
-                    shell=True,
-                    stdout=subprocess.DEVNULL,  # No capturar stdout
-                    stderr=open(err_path, 'w'),  # Capturar stderr en archivo
-                    stdin=subprocess.DEVNULL
-                )
-                
-                # Esperar un momento para ver si hay errores inmediatos
-                time.sleep(1.5)
-                
-                # Verificar si el proceso terminó con error
-                if process.poll() is not None:
-                    # Leer el error
-                    with open(err_path, 'r') as f:
-                        error_output = f.read()
-                    os.unlink(err_path)
+            # En Windows, ejecutar tailscale up y verificar status periódicamente para encontrar URL
+            # En Linux, usar la URL del status si está disponible
+            if is_windows and not auth_url:
+                print("[TAILSCALE] Windows: Ejecutando tailscale up en background...")
+                try:
+                    # Ejecutar tailscale up en background (mostrará URL y esperará autenticación)
+                    up_cmd = f'"{tailscale_cmd}" up'
+                    subprocess.Popen(up_cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, 
+                                     stdin=subprocess.DEVNULL)
+                    print("[TAILSCALE] tailscale up iniciado en background")
                     
-                    if process.returncode != 0:
-                        # Verificar si es un error de permisos
-                        error_lower = error_output.lower()
-                        if ('access denied' in error_lower or 
-                            'prefs write access denied' in error_lower or 
-                            'use \'sudo tailscale up\'' in error_lower or
-                            'sudo tailscale set' in error_lower):
-                            # Necesita sudo, mostrar mensaje informativo
-                            def show_sudo_info():
-                                global tailscale_message_lock
-                                with tailscale_message_lock:
-                                    try:
-                                        root = Tk()
-                                        root.withdraw()
-                                        root.attributes("-topmost", True)
-                                        messagebox.showinfo("Configuración Tailscale", t('tailscale_sudo_needed'))
-                                        root.quit()
-                                        root.destroy()
-                                    except Exception as ex:
-                                        print(f"Error mostrando mensaje: {ex}")
-                            threading.Thread(target=show_sudo_info, daemon=True).start()
-                            return
-                        else:
-                            # Otro tipo de error
-                            print(f"Error ejecutando tailscale up: {error_output}")
-                            return
-                
-                # Si llegamos aquí, el proceso está corriendo o ya terminó exitosamente
-                # No mostrar mensaje de "conectando" para evitar problemas de threading
-                # Solo verificaremos el estado y mostraremos el resultado final
-                
-                # Verificar estado después de unos segundos
-                def check_status():
-                    # Esperar a que el proceso termine o timeout
-                    try:
-                        process.wait(timeout=20)
-                        # Si terminó, verificar si fue con error
-                        if process.returncode != 0:
-                            try:
-                                with open(err_path, 'r') as f:
-                                    error_output = f.read()
-                                os.unlink(err_path)
-                                error_lower = error_output.lower()
-                                if ('access denied' in error_lower or 
-                                    'prefs write access denied' in error_lower or 
-                                    'use \'sudo tailscale up\'' in error_lower or
-                                    'sudo tailscale set' in error_lower):
-                                    def show_sudo_info():
-                                        global tailscale_message_lock
-                                        with tailscale_message_lock:
-                                            try:
-                                                root = Tk()
-                                                root.withdraw()
-                                                root.attributes("-topmost", True)
-                                                messagebox.showinfo("Configuración Tailscale", t('tailscale_sudo_needed'))
-                                                root.quit()
-                                                root.destroy()
-                                            except Exception as ex:
-                                                print(f"Error mostrando mensaje: {ex}")
-                                    threading.Thread(target=show_sudo_info, daemon=True).start()
-                                    return
-                            except:
-                                pass
-                    except subprocess.TimeoutExpired:
-                        # El proceso sigue corriendo, probablemente abrió el navegador
-                        try:
-                            os.unlink(err_path)
-                        except:
-                            pass
+                    # Esperar un momento para que tailscale procese y luego verificar status para URL
+                    print("[TAILSCALE] Esperando unos segundos y verificando status para URL...")
+                    time.sleep(2)  # Dar tiempo para que tailscale procese
                     
-                    # Verificar el estado de Tailscale después de un tiempo
-                    time.sleep(3)
+                    # Verificar status nuevamente para encontrar la URL
+                    status_check_cmd = f'"{tailscale_cmd}" status'
+                    for _ in range(3):  # Intentar 3 veces con delay
+                        status_check = subprocess.run(status_check_cmd, shell=True, capture_output=True, 
+                                                      text=True, timeout=3)
+                        if status_check.stdout:
+                            url_match = re.search(r'https://login\.tailscale\.com/a/[^\s\n]+', status_check.stdout)
+                            if url_match:
+                                auth_url = url_match.group(0).strip()
+                                print(f"[TAILSCALE] URL encontrada en status después de tailscale up: {auth_url}")
+                                break
+                        time.sleep(1)
+                    
+                except Exception as e:
+                    print(f"[TAILSCALE] Error ejecutando tailscale up: {e}")
+            
+            # Si hay URL, abrir navegador
+            if auth_url:
+                try:
+                    webbrowser.open(auth_url)
+                    print(f"[TAILSCALE] Navegador abierto con URL: {auth_url}")
+                except Exception as e:
+                    print(f"[TAILSCALE] Error abriendo navegador: {e}")
+            
+            # En Linux, ejecutar tailscale up en background después de abrir navegador
+            # En Windows, ya se ejecutó arriba para capturar la URL
+            if not is_windows:
+                print("[TAILSCALE] Linux: Ejecutando tailscale up en background...")
+                try:
+                    # Ejecutar tailscale up en background sin bloquear
+                    up_cmd = f'{tailscale_cmd} up'
+                    subprocess.Popen(up_cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL)
+                    print(f"[TAILSCALE] Proceso tailscale up iniciado en background")
+                except Exception as e:
+                    print(f"[TAILSCALE] Error ejecutando tailscale up: {e}")
+            
+            # Iniciar verificación periódica
+            def check_connection_periodic():
+                global tailscale_running
+                print(f"[TAILSCALE] Iniciando verificación periódica de conexión...")
+                max_attempts = 30 if auth_url else 10  # Más tiempo si necesita autenticación
+                status_cmd_check = f'"{tailscale_cmd}" status' if is_windows else f'{tailscale_cmd} status'
+                for i in range(max_attempts):
+                    time.sleep(1)
                     try:
-                        status_result = subprocess.run('tailscale status', shell=True, capture_output=True, text=True, timeout=5)
+                        status_result = subprocess.run(status_cmd_check, shell=True, capture_output=True, text=True, timeout=5)
                         if status_result.returncode == 0:
                             if 'Logged in' in status_result.stdout or '100.' in status_result.stdout:
-                                global tailscale_running
                                 tailscale_running = True
-                                # No mostrar mensaje de "conectado" para evitar problemas de threading
-                                # El estado se reflejará en la UI automáticamente
-                            # Si no está conectado aún, puede que el usuario esté autenticándose
-                            # No mostramos error, el proceso puede estar esperando
+                                print(f"[TAILSCALE] Conectado exitosamente (intento {i+1})")
+                                return
+                        elif i % 5 == 0:  # Log cada 5 segundos
+                            print(f"[TAILSCALE] Esperando conexión... (intento {i+1}/{max_attempts})")
                     except Exception as e:
-                        print(f"Error verificando estado Tailscale: {e}")
-                
-                threading.Thread(target=check_status, daemon=True).start()
-                
-            except Exception as e:
-                try:
-                    os.unlink(err_path)
-                except:
-                    pass
-                print(f"Error ejecutando tailscale up: {e}")
+                        print(f"[TAILSCALE] Error verificando conexión: {e}")
+                print(f"[TAILSCALE] No se detectó conexión después de {max_attempts} intentos")
+            
+            threading.Thread(target=check_connection_periodic, daemon=True).start()
             
         except Exception as e:
             print(f"Error conectando Tailscale: {e}")
@@ -652,7 +752,9 @@ def toggle_tailscale():
     def disconnect_tailscale():
         global tailscale_running
         try:
-            cmd = 'tailscale down'
+            tailscale_cmd = get_tailscale_path()
+            is_windows = os.name == 'nt'
+            cmd = f'"{tailscale_cmd}" down' if is_windows else f'{tailscale_cmd} down'
             result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=10)
             if result.returncode == 0:
                 tailscale_running = False
@@ -680,7 +782,7 @@ TRANSLATIONS = {
         'det_audio_off': 'DET AUDIO: OFF',
         'ip_label': 'IP: {0}',
         'fps_label': 'FPS: {0:.1f}',
-        'language_app': 'IDIOMA APP',
+        'language_app': 'IDIOMA Y CONFIG. APP',
         'no_streaming': 'Streaming no detectado',
         'no_streaming_yolo': 'No se puede iniciar YOLO porque no hay streaming de video disponible.',
         'activate_audio_first': 'Activa primero la transmisión de sonido pulsando el icono de volumen.',
@@ -762,7 +864,17 @@ TRANSLATIONS = {
         'tailscale_installer_not_found': 'Instalador de Tailscale no encontrado en la ruta del proyecto.',
         'tailscale_oauth_info': 'Tailscale usa autenticación OAuth (Google, Microsoft, etc.).\nAl activar Tailscale, se abrirá tu navegador para autenticarte.',
         'tailscale_installed_info': 'Tailscale está instalado. Usa el botón TAILSCALE: ON/OFF para conectarte.',
+        'tailscale_logged_in_as': 'Logueado como:',
+        'tailscale_ip_device': 'IP Tailscale de este dispositivo:',
+        'tailscale_other_devices': 'Otros dispositivos conectados:',
+        'tailscale_create_account': 'Crear nueva cuenta Tailscale',
         'tailscale_sudo_needed': 'Tailscale requiere permisos de administrador.\n\nEjecuta una vez en la terminal:\nsudo tailscale set --operator=$USER\n\nLuego podrás usar Tailscale sin sudo.',
+        'nvidia_cuda_info': 'Se recomienda si se dispone de tarjeta gráfica NVIDIA, tener los drivers actualizados. Además, en Linux se requiere NVIDIA Cuda Toolkit para correcto funcionamiento de las librerías (sudo apt install nvidia-cuda-toolkit).',
+        'audio_sensitivity_label': 'Sensibilidad raw de detección de audio por Tensorflow (avanzado):',
+        'audio_sensitivity_percent': '%',
+        'audio_sensitivity_save_error': 'No se pudo guardar la sensibilidad de audio.',
+        'audio_sensitivity_range_error': 'El valor de sensibilidad debe estar entre 1% y 100%.',
+        'audio_sensitivity_number_error': 'El valor de sensibilidad debe ser un número.',
     },
     'en': {  # English
         'yolo_on': 'YOLO: {0} det.',
@@ -773,7 +885,7 @@ TRANSLATIONS = {
         'det_audio_off': 'AUDIO DET: OFF',
         'ip_label': 'IP: {0}',
         'fps_label': 'FPS: {0:.1f}',
-        'language_app': 'APP LANGUAGE',
+        'language_app': 'LANGUAGE & APP CONFIG.',
         'no_streaming': 'Streaming not detected',
         'no_streaming_yolo': 'Cannot start YOLO because there is no video streaming available.',
         'activate_audio_first': 'Activate audio transmission first by clicking the volume icon.',
@@ -855,8 +967,17 @@ TRANSLATIONS = {
         'tailscale_installer_not_found': 'Tailscale installer not found in project path.',
         'tailscale_oauth_info': 'Tailscale uses OAuth authentication (Google, Microsoft, etc.).\nWhen you activate Tailscale, your browser will open for authentication.',
         'tailscale_installed_info': 'Tailscale is installed. Use the TAILSCALE: ON/OFF button to connect.',
+        'tailscale_logged_in_as': 'Logged in as:',
+        'tailscale_ip_device': 'Tailscale IP of this device:',
+        'tailscale_other_devices': 'Other connected devices:',
+        'tailscale_create_account': 'Create new Tailscale account',
         'tailscale_sudo_needed': 'Tailscale requires administrator permissions.\n\nRun once in terminal:\nsudo tailscale set --operator=$USER\n\nThen you can use Tailscale without sudo.',
-        'tailscale_sudo_needed': 'Tailscale requires administrator permissions.\n\nRun once in terminal:\nsudo tailscale set --operator=$USER\n\nThen you can use Tailscale without sudo.',
+        'nvidia_cuda_info': 'It is recommended that if you have an NVIDIA graphics card, keep the drivers updated. Also, on Linux, NVIDIA CUDA Toolkit is required for proper functioning of the libraries (sudo apt install nvidia-cuda-toolkit).',
+        'audio_sensitivity_label': 'Raw audio detection sensitivity by Tensorflow (advanced):',
+        'audio_sensitivity_percent': '%',
+        'audio_sensitivity_save_error': 'Could not save audio sensitivity.',
+        'audio_sensitivity_range_error': 'Sensitivity value must be between 1% and 100%.',
+        'audio_sensitivity_number_error': 'Sensitivity value must be a number.',
     },
     'fr': {  # French
         'yolo_on': 'YOLO: {0} dét.',
@@ -867,7 +988,7 @@ TRANSLATIONS = {
         'det_audio_off': 'DET AUDIO: OFF',
         'ip_label': 'IP: {0}',
         'fps_label': 'FPS: {0:.1f}',
-        'language_app': 'LANGUE APP',
+        'language_app': 'LANGUE ET CONFIG. APP',
         'no_streaming': 'Streaming non détecté',
         'no_streaming_yolo': 'Impossible de démarrer YOLO car aucun streaming vidéo n\'est disponible.',
         'activate_audio_first': 'Activez d\'abord la transmission audio en cliquant sur l\'icône de volume.',
@@ -949,7 +1070,17 @@ TRANSLATIONS = {
         'tailscale_installer_not_found': 'Installateur Tailscale introuvable dans le chemin du projet.',
         'tailscale_oauth_info': 'Tailscale utilise l\'authentification OAuth (Google, Microsoft, etc.).\nLorsque vous activez Tailscale, votre navigateur s\'ouvrira pour l\'authentification.',
         'tailscale_installed_info': 'Tailscale est installé. Utilisez le bouton TAILSCALE: ON/OFF pour vous connecter.',
+        'tailscale_logged_in_as': 'Connecté en tant que:',
+        'tailscale_ip_device': 'IP Tailscale de cet appareil:',
+        'tailscale_other_devices': 'Autres appareils connectés:',
+        'tailscale_create_account': 'Créer un nouveau compte Tailscale',
         'tailscale_sudo_needed': 'Tailscale nécessite des permissions d\'administrateur.\n\nExécutez une fois dans le terminal:\nsudo tailscale set --operator=$USER\n\nEnsuite, vous pourrez utiliser Tailscale sans sudo.',
+        'nvidia_cuda_info': 'Il est recommandé, si vous disposez d\'une carte graphique NVIDIA, d\'avoir les pilotes à jour. De plus, sur Linux, NVIDIA CUDA Toolkit est requis pour le bon fonctionnement des bibliothèques (sudo apt install nvidia-cuda-toolkit).',
+        'audio_sensitivity_label': 'Sensibilité brute de détection audio par Tensorflow (avancé):',
+        'audio_sensitivity_percent': '%',
+        'audio_sensitivity_save_error': 'Impossible d\'enregistrer la sensibilité audio.',
+        'audio_sensitivity_range_error': 'La valeur de sensibilité doit être comprise entre 1% et 100%.',
+        'audio_sensitivity_number_error': 'La valeur de sensibilité doit être un nombre.',
     },
     'it': {  # Italian
         'yolo_on': 'YOLO: {0} rilev.',
@@ -960,7 +1091,7 @@ TRANSLATIONS = {
         'det_audio_off': 'RIL AUDIO: OFF',
         'ip_label': 'IP: {0}',
         'fps_label': 'FPS: {0:.1f}',
-        'language_app': 'LINGUA APP',
+        'language_app': 'LINGUA E CONFIG. APP',
         'no_streaming': 'Streaming non rilevato',
         'no_streaming_yolo': 'Impossibile avviare YOLO perché non è disponibile alcuno streaming video.',
         'activate_audio_first': 'Attiva prima la trasmissione audio cliccando sull\'icona del volume.',
@@ -1042,7 +1173,17 @@ TRANSLATIONS = {
         'tailscale_installer_not_found': 'Installatore Tailscale non trovato nel percorso del progetto.',
         'tailscale_oauth_info': 'Tailscale utilizza l\'autenticazione OAuth (Google, Microsoft, ecc.).\nQuando attivi Tailscale, il tuo browser si aprirà per l\'autenticazione.',
         'tailscale_installed_info': 'Tailscale è installato. Usa il pulsante TAILSCALE: ON/OFF per connetterti.',
+        'tailscale_logged_in_as': 'Accesso effettuato come:',
+        'tailscale_ip_device': 'IP Tailscale di questo dispositivo:',
+        'tailscale_other_devices': 'Altri dispositivi connessi:',
+        'tailscale_create_account': 'Crea nuovo account Tailscale',
         'tailscale_sudo_needed': 'Tailscale richiede permessi di amministratore.\n\nEsegui una volta nel terminale:\nsudo tailscale set --operator=$USER\n\nQuindi potrai usare Tailscale senza sudo.',
+        'nvidia_cuda_info': 'Si raccomanda, se si dispone di una scheda grafica NVIDIA, di avere i driver aggiornati. Inoltre, su Linux è richiesto NVIDIA CUDA Toolkit per il corretto funzionamento delle librerie (sudo apt install nvidia-cuda-toolkit).',
+        'audio_sensitivity_label': 'Sensibilità raw di rilevamento audio tramite Tensorflow (avanzato):',
+        'audio_sensitivity_percent': '%',
+        'audio_sensitivity_save_error': 'Impossibile salvare la sensibilità audio.',
+        'audio_sensitivity_range_error': 'Il valore di sensibilità deve essere compreso tra 1% e 100%.',
+        'audio_sensitivity_number_error': 'Il valore di sensibilità deve essere un numero.',
     },
     'pt': {  # Portuguese
         'yolo_on': 'YOLO: {0} det.',
@@ -1053,7 +1194,7 @@ TRANSLATIONS = {
         'det_audio_off': 'DET ÁUDIO: OFF',
         'ip_label': 'IP: {0}',
         'fps_label': 'FPS: {0:.1f}',
-        'language_app': 'IDIOMA APP',
+        'language_app': 'IDIOMA E CONFIG. APP',
         'no_streaming': 'Streaming não detectado',
         'no_streaming_yolo': 'Não é possível iniciar YOLO porque não há streaming de vídeo disponível.',
         'activate_audio_first': 'Ative primeiro a transmissão de áudio clicando no ícone de volume.',
@@ -1135,7 +1276,17 @@ TRANSLATIONS = {
         'tailscale_installer_not_found': 'Instalador Tailscale não encontrado no caminho do projeto.',
         'tailscale_oauth_info': 'Tailscale usa autenticação OAuth (Google, Microsoft, etc.).\nAo ativar Tailscale, seu navegador será aberto para autenticação.',
         'tailscale_installed_info': 'Tailscale está instalado. Use o botão TAILSCALE: ON/OFF para conectar.',
+        'tailscale_logged_in_as': 'Conectado como:',
+        'tailscale_ip_device': 'IP Tailscale deste dispositivo:',
+        'tailscale_other_devices': 'Outros dispositivos conectados:',
+        'tailscale_create_account': 'Criar nova conta Tailscale',
         'tailscale_sudo_needed': 'Tailscale requer permissões de administrador.\n\nExecute uma vez no terminal:\nsudo tailscale set --operator=$USER\n\nDepois poderá usar Tailscale sem sudo.',
+        'nvidia_cuda_info': 'Recomenda-se, se você tiver uma placa gráfica NVIDIA, manter os drivers atualizados. Além disso, no Linux, o NVIDIA CUDA Toolkit é necessário para o funcionamento correto das bibliotecas (sudo apt install nvidia-cuda-toolkit).',
+        'audio_sensitivity_label': 'Sensibilidade raw de detecção de áudio por Tensorflow (avançado):',
+        'audio_sensitivity_percent': '%',
+        'audio_sensitivity_save_error': 'Não foi possível salvar a sensibilidade de áudio.',
+        'audio_sensitivity_range_error': 'O valor de sensibilidade deve estar entre 1% e 100%.',
+        'audio_sensitivity_number_error': 'O valor de sensibilidade deve ser um número.',
     }
 }
 
@@ -1162,12 +1313,61 @@ def guardar_idioma(lang):
     """Guarda el idioma seleccionado"""
     global current_language
     try:
+        # Cargar configuración existente para preservar otros valores
+        config = {}
+        if os.path.exists(LANGUAGE_CONFIG_FILE):
+            try:
+                with open(LANGUAGE_CONFIG_FILE, 'r', encoding='utf-8') as f:
+                    config = json.load(f)
+            except:
+                pass
+        config['language'] = lang
         with open(LANGUAGE_CONFIG_FILE, 'w', encoding='utf-8') as f:
-            json.dump({'language': lang}, f, ensure_ascii=False, indent=2)
+            json.dump(config, f, ensure_ascii=False, indent=2)
         current_language = lang
         return True
     except Exception as e:
         print(f"Error al guardar idioma: {e}")
+        return False
+
+def cargar_audio_threshold():
+    """Carga el umbral de confianza de audio desde la configuración"""
+    global AUDIO_CONFIDENCE_THRESHOLD
+    if os.path.exists(LANGUAGE_CONFIG_FILE):
+        try:
+            with open(LANGUAGE_CONFIG_FILE, 'r', encoding='utf-8') as f:
+                config = json.load(f)
+                threshold = config.get('audio_confidence_threshold', 0.15)
+                # Validar que esté en rango válido (0.01 a 1.0)
+                if 0.01 <= threshold <= 1.0:
+                    AUDIO_CONFIDENCE_THRESHOLD = threshold
+                else:
+                    AUDIO_CONFIDENCE_THRESHOLD = 0.15
+        except Exception as e:
+            print(f"Error al cargar umbral de audio: {e}")
+            AUDIO_CONFIDENCE_THRESHOLD = 0.15
+    else:
+        AUDIO_CONFIDENCE_THRESHOLD = 0.15
+
+def guardar_audio_threshold(threshold):
+    """Guarda el umbral de confianza de audio"""
+    global AUDIO_CONFIDENCE_THRESHOLD
+    try:
+        # Cargar configuración existente
+        config = {}
+        if os.path.exists(LANGUAGE_CONFIG_FILE):
+            try:
+                with open(LANGUAGE_CONFIG_FILE, 'r', encoding='utf-8') as f:
+                    config = json.load(f)
+            except:
+                pass
+        config['audio_confidence_threshold'] = threshold
+        with open(LANGUAGE_CONFIG_FILE, 'w', encoding='utf-8') as f:
+            json.dump(config, f, ensure_ascii=False, indent=2)
+        AUDIO_CONFIDENCE_THRESHOLD = threshold
+        return True
+    except Exception as e:
+        print(f"Error al guardar umbral de audio: {e}")
         return False
 
 def t(key, *args):
@@ -1204,18 +1404,84 @@ def show_language_selection_dialog():
     
     selected_lang = tk.StringVar(value=current_language)
     
+    # Crear los labels primero (para que las funciones puedan acceder a ellos)
+    nvidia_label = ttk.Label(main_frame, text=t('nvidia_cuda_info'), 
+                             font=("Arial", 9), 
+                             foreground="gray",
+                             wraplength=400,
+                             justify="left")
+    
+    # Crear el frame de sensibilidad primero (para que la función pueda acceder al label)
+    sensitivity_frame = ttk.Frame(main_frame)
+    sensitivity_label = ttk.Label(sensitivity_frame, text=t('audio_sensitivity_label'), 
+                                  font=("Arial", 9))
+    
+    # Función para actualizar el mensaje cuando cambie el idioma
+    def update_nvidia_message():
+        # Guardar temporalmente el idioma seleccionado
+        temp_lang = selected_lang.get()
+        # Obtener la traducción del mensaje para ese idioma
+        nvidia_text = TRANSLATIONS.get(temp_lang, TRANSLATIONS['es']).get('nvidia_cuda_info', '')
+        nvidia_label.config(text=nvidia_text)
+        # Actualizar también la etiqueta de sensibilidad
+        sensitivity_label.config(text=t('audio_sensitivity_label'))
+    
+    # Crear los radiobuttons
     for lang_code, lang_name in languages:
         ttk.Radiobutton(main_frame, text=lang_name, variable=selected_lang, 
-                       value=lang_code).pack(anchor="w", pady=5)
+                       value=lang_code, command=update_nvidia_message).pack(anchor="w", pady=5)
+    
+    # Separador (se muestra después de los radiobuttons)
+    ttk.Separator(main_frame, orient='horizontal').pack(fill='x', pady=(15, 15))
+    
+    # Control de sensibilidad de audio (se muestra después del separador)
+    sensitivity_frame.pack(fill="x", pady=(0, 15))
+    sensitivity_label.pack(anchor="w", pady=(0, 5))
+    
+    sensitivity_control_frame = ttk.Frame(sensitivity_frame)
+    sensitivity_control_frame.pack(fill="x")
+    
+    # Convertir el umbral actual (0.15) a porcentaje (15)
+    current_threshold_percent = int(AUDIO_CONFIDENCE_THRESHOLD * 100)
+    sensitivity_var = tk.StringVar(value=str(current_threshold_percent))
+    
+    sensitivity_spinbox = ttk.Spinbox(sensitivity_control_frame, 
+                                       from_=1, 
+                                       to=100, 
+                                       textvariable=sensitivity_var,
+                                       width=10)
+    sensitivity_spinbox.pack(side="left", padx=(0, 5))
+    
+    ttk.Label(sensitivity_control_frame, text=t('audio_sensitivity_percent')).pack(side="left")
+    
+    # Mensaje sobre NVIDIA CUDA
+    ttk.Separator(main_frame, orient='horizontal').pack(fill='x', pady=(15, 15))
+    nvidia_label.pack(anchor="w", pady=(0, 15))
     
     result = {"selected": None}
     
     def on_ok():
         result["selected"] = selected_lang.get()
-        if guardar_idioma(result["selected"]):
-            root.destroy()
-        else:
+        # Guardar idioma
+        if not guardar_idioma(result["selected"]):
             messagebox.showerror(t('error'), t('could_not_save_language'))
+            return
+        
+        # Guardar umbral de audio
+        try:
+            threshold_percent = int(sensitivity_var.get())
+            if 1 <= threshold_percent <= 100:
+                threshold_value = threshold_percent / 100.0
+                if not guardar_audio_threshold(threshold_value):
+                    messagebox.showerror(t('error'), t('audio_sensitivity_save_error'))
+            else:
+                messagebox.showerror(t('error'), t('audio_sensitivity_range_error'))
+                return
+        except ValueError:
+            messagebox.showerror(t('error'), t('audio_sensitivity_number_error'))
+            return
+        
+        root.destroy()
     
     def on_cancel():
         result["selected"] = None
@@ -1226,6 +1492,60 @@ def show_language_selection_dialog():
     
     ttk.Button(btn_frame, text=t('ok'), command=on_ok, width=12).pack(side="left", padx=5)
     ttk.Button(btn_frame, text=t('cancel'), command=on_cancel, width=12).pack(side="left", padx=5)
+    
+    # Separador antes del footer
+    ttk.Separator(main_frame, orient='horizontal').pack(fill='x', pady=(15, 15))
+    
+    # Footer con logo de GitHub y copyright (al final del diálogo)
+    footer_frame = ttk.Frame(main_frame)
+    footer_frame.pack(fill="x", pady=(0, 0))
+    
+    # Logo de GitHub
+    github_logo_path = os.path.join(BASE_DIR, "ghlogo.png")
+    github_logo = None
+    github_button = None
+    
+    if os.path.exists(github_logo_path):
+        try:
+            from PIL import Image, ImageTk
+            img = Image.open(github_logo_path)
+            # Redimensionar a un tamaño razonable (16x16 píxeles para icono pequeño)
+            img = img.resize((16, 16), Image.Resampling.LANCZOS)
+            github_logo = ImageTk.PhotoImage(img)
+            
+            github_button = tk.Button(footer_frame, 
+                                     image=github_logo,
+                                     command=lambda: webbrowser.open('https://github.com/zarkentroska/ADAS3-Server'),
+                                     cursor="hand2",
+                                     relief="flat",
+                                     borderwidth=0)
+            github_button.pack(side="left", padx=(0, 10))
+            # Mantener referencia a la imagen para evitar que se elimine
+            github_button.image = github_logo
+        except ImportError:
+            # Si PIL no está disponible, intentar con PhotoImage de tkinter
+            try:
+                github_logo = tk.PhotoImage(file=github_logo_path)
+                # Redimensionar si es necesario (PhotoImage no tiene resize fácil, usar subimage)
+                github_button = tk.Button(footer_frame,
+                                        image=github_logo,
+                                        command=lambda: webbrowser.open('https://github.com/zarkentroska/ADAS3-Server'),
+                                        cursor="hand2",
+                                        relief="flat",
+                                        borderwidth=0)
+                github_button.pack(side="left", padx=(0, 10))
+                github_button.image = github_logo
+            except Exception as e:
+                print(f"No se pudo cargar el logo de GitHub: {e}")
+        except Exception as e:
+            print(f"Error al cargar el logo de GitHub: {e}")
+    
+    # Texto de copyright
+    copyright_label = ttk.Label(footer_frame, 
+                               text="ADAS3 Server v0.5 |  Copyright (C) 2026 GNU GPL 3.0",
+                               font=("Arial", 8),
+                               foreground="gray")
+    copyright_label.pack(side="left")
     
     root.mainloop()
     return result["selected"]
@@ -1327,14 +1647,55 @@ def show_tailscale_config_dialog():
         status_text = t('tailscale_installed_info')
         status_label = ttk.Label(main_frame, text=status_text, font=("Arial", 9), foreground="green", wraplength=300, justify="left")
         status_label.pack(anchor="w", pady=(0, 15))
+        
+        # Obtener información de Tailscale si está conectado
+        username = get_tailscale_username()
+        tailscale_ip = get_tailscale_ip()
+        
+        if username or tailscale_ip:
+            # Mostrar información adicional si está conectado
+            info_frame = ttk.Frame(main_frame)
+            info_frame.pack(anchor="w", pady=(0, 15))
+            
+            if username:
+                logged_in_label = ttk.Label(info_frame, text=f"{t('tailscale_logged_in_as')} {username}", 
+                                           font=("Arial", 9), foreground="gray", wraplength=300, justify="left")
+                logged_in_label.pack(anchor="w", pady=(0, 5))
+            
+            if tailscale_ip:
+                ip_label = ttk.Label(info_frame, text=f"{t('tailscale_ip_device')} {tailscale_ip}", 
+                                    font=("Arial", 9), foreground="darkblue", wraplength=300, justify="left")
+                ip_label.pack(anchor="w", pady=(0, 5))
+            
+            # Obtener y mostrar otros dispositivos conectados (excluyendo la IP actual)
+            connected_devices = get_tailscale_connected_devices()
+            # Filtrar para excluir la IP del dispositivo actual
+            if tailscale_ip and connected_devices:
+                connected_devices = [d for d in connected_devices if d['ip'] != tailscale_ip]
+            
+            if connected_devices:
+                other_devices_label = ttk.Label(info_frame, text=t('tailscale_other_devices'), 
+                                               font=("Arial", 9), foreground="darkblue", wraplength=300, justify="left")
+                other_devices_label.pack(anchor="w", pady=(0, 5))
+                
+                # Mostrar cada dispositivo
+                for device in connected_devices:
+                    device_text = f"{device['ip']} ({device['name']})"
+                    device_label = ttk.Label(info_frame, text=device_text, 
+                                            font=("Arial", 9), foreground="red", wraplength=300, justify="left")
+                    device_label.pack(anchor="w", pady=(0, 2))
     
     def on_close():
         root.destroy()
+    
+    def on_create_account():
+        webbrowser.open('https://login.tailscale.com/start')
     
     btn_frame = ttk.Frame(main_frame)
     btn_frame.pack(fill="x", pady=(15, 0))
     
     ttk.Button(btn_frame, text=t('ok'), command=on_close, width=12).pack(side="left", padx=5)
+    ttk.Button(btn_frame, text=t('tailscale_create_account'), command=on_create_account, width=25).pack(side="left", padx=5)
     
     root.mainloop()
     return True
@@ -1387,11 +1748,13 @@ def solicitar_nueva_ip(ip_actual):
 ip_y_puerto = cargar_ip()
 base_url = f"http://{ip_y_puerto}"
 video_url = base_url + "/video"
-audio_url = base_url + "/audio.wav"
+audio_url = base_url + "/audio"
 window_name = 'ADAS3 Server'
 
 # Cargar idioma al inicio
 cargar_idioma()
+# Cargar umbral de audio
+cargar_audio_threshold()
 
 # Cargar configuración de Tailscale al inicio
 cargar_tailscale_config()
@@ -1411,6 +1774,7 @@ p = pyaudio.PyAudio()
 audio_stream = None
 stop_audio_thread = False
 audio_enabled = False
+audio_playback_muted = False  # Mute playback sin afectar detección
 audio_thread = None
 
 headers = {
@@ -1428,6 +1792,10 @@ audio_detection_thread = None
 audio_buffer = queue.Queue(maxsize=20)
 audio_detection_result = {"is_drone": False, "confidence": 0.0}
 audio_detection_lock = threading.Lock()
+# Sistema de alerta persistente
+audio_detection_alert_time = None  # Timestamp de la última detección que superó el umbral
+audio_detection_max_confidence = 0.0  # Máximo porcentaje alcanzado durante la alerta actual
+AUDIO_ALERT_DURATION = 30  # Duración de la alerta en segundos
 
 # Variables para espectrograma de audio (DATOS RAW)
 audio_spectrogram_data = None
@@ -1441,12 +1809,42 @@ spectrogram_render_active = False
 spectrogram_image_lock = threading.Lock()
 
 AUDIO_SAMPLE_RATE = 22050
-AUDIO_DURATION = 2
-AUDIO_CONFIDENCE_THRESHOLD = 0.7
+AUDIO_DURATION = 2  # Segundos (entero para evitar errores de slice)
+# AUDIO_CONFIDENCE_THRESHOLD se carga desde la configuración, por defecto 0.15
+AUDIO_CONFIDENCE_THRESHOLD = 0.15  # Umbral muy bajo para detectar señales débiles  # 70% de confianza para detectar dron
+AUDIO_VISUAL_MULTIPLIER = 3  # Multiplicador visual para mostrar porcentajes más altos (hasta 100% máximo)
 N_MELS = 128
 HOP_LENGTH = 512
 N_FFT = 2048
 
+# --- UTILIDADES AUDIO ---
+def prepare_chunk_for_detection(raw_chunk, sample_rate, channels):
+    """Convierte un chunk PCM a mono 44.1 kHz para la IA."""
+    try:
+        audio_array = np.frombuffer(raw_chunk, dtype=np.int16)
+        if len(audio_array) == 0:
+            return b''
+        
+        if channels > 1:
+            remainder = len(audio_array) % channels
+            if remainder:
+                audio_array = audio_array[:-remainder]
+            if len(audio_array) == 0:
+                return b''
+            audio_array = audio_array.reshape(-1, channels).mean(axis=1)
+        
+        if sample_rate != 44100:
+            audio_array = audio_array.astype(np.float32) / 32768.0
+            audio_array = librosa.resample(audio_array, orig_sr=sample_rate, target_sr=44100)
+            audio_array = np.clip(audio_array, -1.0, 1.0)
+            audio_array = (audio_array * 32767.0).astype(np.int16)
+        else:
+            audio_array = audio_array.astype(np.int16)
+        
+        return audio_array.tobytes()
+    except Exception as e:
+        print(f"[AUDIO] Error preparando chunk: {e}")
+        return raw_chunk
 # --- CONFIGURACIÓN TINYSA ULTRA+ ---
 # Soporta dos modos: serial directo (PC) o HTTP (Android)
 tinysa_serial = None
@@ -2907,7 +3305,34 @@ def extract_features_realtime(audio_chunk):
     
     try:
         audio_data = np.frombuffer(audio_chunk, dtype=np.int16).astype(np.float32)
+        
+        # Log temporal: ver valores raw del audio
+        raw_min, raw_max = np.min(audio_data), np.max(audio_data)
+        raw_mean = np.mean(np.abs(audio_data))
+        
         audio_data = audio_data / 32768.0
+        
+        # Log temporal: ver valores normalizados
+        norm_min, norm_max = np.min(audio_data), np.max(audio_data)
+        norm_mean = np.mean(np.abs(audio_data))
+        
+        # Aplicar ganancia adaptativa para aumentar la señal (solo para detección, no afecta playback)
+        # Si el audio es muy bajo, aplicar más ganancia
+        mean_abs_level = np.mean(np.abs(audio_data))
+        
+        if mean_abs_level < 0.005:  # Audio muy bajo (< 0.5% del rango)
+            AUDIO_GAIN = 40.0  # Ganancia muy alta para señales muy débiles
+        elif mean_abs_level < 0.01:  # Audio bajo (< 1% del rango)
+            AUDIO_GAIN = 30.0
+        elif mean_abs_level < 0.02:  # Audio moderado (< 2% del rango)
+            AUDIO_GAIN = 20.0
+        else:  # Audio normal
+            AUDIO_GAIN = 10.0
+        
+        audio_data = audio_data * AUDIO_GAIN
+        
+        # Limitar a [-1, 1] para evitar clipping
+        audio_data = np.clip(audio_data, -1.0, 1.0)
         
         if len(audio_data) > 0:
             audio_data = librosa.resample(audio_data, orig_sr=44100, target_sr=AUDIO_SAMPLE_RATE)
@@ -2929,38 +3354,62 @@ def extract_features_realtime(audio_chunk):
         
         mel_spec_db = librosa.power_to_db(mel_spec, ref=np.max)
         
-        # Guardar datos RAW para que el otro thread los pinte
+        # Log temporal: ver valores del mel spectrograma antes de normalizar
+        mel_min, mel_max = np.min(mel_spec_db), np.max(mel_spec_db)
+        mel_mean = np.mean(mel_spec_db)
+        
+        # Guardar datos para el espectrograma visual
         with audio_spectrogram_lock:
             freqs_mel = librosa.mel_frequencies(n_mels=N_MELS, fmin=0, fmax=AUDIO_SAMPLE_RATE/2)
             audio_spectrogram_freqs = freqs_mel
             audio_spectrogram_data = mel_spec_db
         
-        # Normalizar para el modelo
+        # Normalizar para el modelo (EXACTAMENTE como en el código antiguo)
         if audio_mean is not None and audio_std is not None:
-            mel_spec_db_norm = (mel_spec_db - audio_mean) / (audio_std + 1e-8)
+            mel_spec_db = (mel_spec_db - audio_mean) / (audio_std + 1e-8)
+            
+            # Log temporal: ver valores después de normalizar
+            norm_mel_min, norm_mel_max = np.min(mel_spec_db), np.max(mel_spec_db)
+            norm_mel_mean = np.mean(mel_spec_db)
+            
+            # Log cada 10 llamadas para no saturar
+            if not hasattr(extract_features_realtime, '_call_count'):
+                extract_features_realtime._call_count = 0
+            extract_features_realtime._call_count += 1
+            
+            if extract_features_realtime._call_count % 10 == 0:
+                # Calcular valores después del resample
+                gain_min, gain_max = np.min(audio_data), np.max(audio_data)
+                gain_mean = np.mean(np.abs(audio_data))
+                print(f"[DEBUG AUDIO] Raw: min={raw_min:.0f}, max={raw_max:.0f}, mean_abs={raw_mean:.0f} | "
+                      f"Norm: min={norm_min:.4f}, max={norm_max:.4f}, mean_abs={norm_mean:.4f} (level={mean_abs_level:.5f}) | "
+                      f"Gain {AUDIO_GAIN:.1f}x: min={gain_min:.4f}, max={gain_max:.4f}, mean_abs={gain_mean:.4f} | "
+                      f"Mel dB: min={mel_min:.2f}, max={mel_max:.2f}, mean={mel_mean:.2f} | "
+                      f"Mel norm: min={norm_mel_min:.2f}, max={norm_mel_max:.2f}, mean={norm_mel_mean:.2f}")
         else:
             return None
         
-        if mel_spec_db_norm.shape[1] < 87:
-            pad_width = 87 - mel_spec_db_norm.shape[1]
-            mel_spec_db_norm = np.pad(mel_spec_db_norm, ((0, 0), (0, pad_width)))
+        if mel_spec_db.shape[1] < 87:
+            pad_width = 87 - mel_spec_db.shape[1]
+            mel_spec_db = np.pad(mel_spec_db, ((0, 0), (0, pad_width)))
         else:
-            mel_spec_db_norm = mel_spec_db_norm[:, :87]
+            mel_spec_db = mel_spec_db[:, :87]
         
-        return mel_spec_db_norm
+        # Retornar solo features (sin nivel, ya no lo necesitamos)
+        return mel_spec_db
         
     except Exception as e:
         print(f"[FEATURES] Error: {e}")
         return None
 
 def audio_detection_worker():
-    """Worker thread para detección de audio (Inferencia AI)"""
-    global audio_detection_result
+    """Worker thread para detección de audio"""
+    global audio_detection_result, audio_detection_alert_time, audio_detection_max_confidence
     
     accumulated_audio = b''
     required_bytes = int(44100 * AUDIO_DURATION * 2)
     
-    print(f"[AUDIO] Detection Worker iniciado")
+    print(f"[AUDIO] Worker iniciado")
     
     while audio_detection_enabled:
         try:
@@ -2976,15 +3425,58 @@ def audio_detection_worker():
                         features = np.expand_dims(features, axis=0)
                         
                         prediction = audio_model.predict(features, verbose=0)[0][0]
-                        is_drone = prediction >= AUDIO_CONFIDENCE_THRESHOLD
                         
+                        # Aplicar multiplicador visual (limitado a 100%)
+                        visual_confidence = min(1.0, prediction * AUDIO_VISUAL_MULTIPLIER)
+                        
+                        # Debug: siempre mostrar la primera predicción para verificar que funciona
+                        if not hasattr(audio_detection_worker, '_first_prediction_shown'):
+                            print(f"[AUDIO] Primera predicción: {visual_confidence*100:.1f}% (raw: {prediction*100:.1f}%)")
+                            audio_detection_worker._first_prediction_shown = True
+                        
+                        # Si supera el umbral, activar alerta y guardar timestamp
+                        if prediction >= AUDIO_CONFIDENCE_THRESHOLD:
+                            current_time = time.time()
+                            if audio_detection_alert_time is None:
+                                # Nueva detección - guardar timestamp y máximo
+                                audio_detection_alert_time = current_time
+                                audio_detection_max_confidence = prediction
+                                alert_time_str = time.strftime("%H:%M:%S", time.localtime(current_time))
+                                visual_pct = min(100, int(visual_confidence * 100))
+                                print(f"[AUDIO] ⚠ DRON DETECTADO A LAS {alert_time_str} - {visual_pct}% (raw: {prediction*100:.1f}%)")
+                            else:
+                                # Ya hay una alerta activa - actualizar máximo si es mayor
+                                if prediction > audio_detection_max_confidence:
+                                    audio_detection_max_confidence = prediction
+                                # Actualizar timestamp si es una nueva detección muy fuerte
+                                if prediction > 0.5:  # Si es muy alta (>50%), actualizar timestamp
+                                    audio_detection_alert_time = current_time
+                                    alert_time_str = time.strftime("%H:%M:%S", time.localtime(current_time))
+                                    visual_pct = min(100, int(visual_confidence * 100))
+                                    print(f"[AUDIO] ⚠ NUEVA DETECCIÓN A LAS {alert_time_str} - {visual_pct}% (raw: {prediction*100:.1f}%)")
+                        
+                        # Verificar si la alerta sigue activa (dentro de los 30 segundos)
+                        is_drone = False
+                        if audio_detection_alert_time is not None:
+                            elapsed = time.time() - audio_detection_alert_time
+                            if elapsed < AUDIO_ALERT_DURATION:
+                                is_drone = True
+                            else:
+                                # Alerta expirada - resetear máximo
+                                audio_detection_alert_time = None
+                                audio_detection_max_confidence = 0.0
+                        
+                        # Guardar confianza visual para mostrar
                         with audio_detection_lock:
                             audio_detection_result = {
                                 "is_drone": is_drone,
-                                "confidence": float(prediction)
+                                "confidence": float(visual_confidence)  # Confianza visual (multiplicada)
                             }
                         
-                        print(f"[AUDIO] Predicción: {prediction:.3f} | Drone: {is_drone}")
+                        # Mostrar predicción siempre
+                        status = "⚠ ALERTA ACTIVA" if is_drone else ""
+                        visual_pct = min(100, int(visual_confidence * 100))
+                        print(f"[AUDIO] Predicción: {visual_pct}% (raw: {prediction*100:.1f}%) | Drone: {is_drone} {status}")
                         
                 except Exception as e:
                     print(f"[AUDIO] Error: {e}")
@@ -2997,7 +3489,7 @@ def audio_detection_worker():
         except Exception as e:
             print(f"[AUDIO] Error crítico: {e}")
     
-    print("[AUDIO] Detection Worker finalizado")
+    print("[AUDIO] Worker finalizado")
 
 # --- NUEVO: WORKER PARA RENDERIZAR ESPECTROGRAMA ---
 def spectrogram_render_worker():
@@ -3081,9 +3573,12 @@ def toggle_audio_detection():
             if not cargar_modelo_audio():
                 return
         
+        # Si el audio no está activo, iniciarlo automáticamente (con playback muteado)
         if not audio_enabled:
-            print("Activa primero el audio (tecla 'M')")
-            return
+            global audio_playback_muted
+            audio_playback_muted = True  # Mutear playback automáticamente
+            start_audio()
+            print("[AUDIO] Stream iniciado automáticamente (playback muteado)")
         
         # Iniciar thread de detección (IA)
         audio_detection_enabled = True
@@ -3608,7 +4103,9 @@ def overlay_audio_spectrogram(frame):
              spectrogram_img = cv2.resize(spectrogram_img, (target_w, target_h))
              oh, ow = target_h, target_w
 
-        y_offset = 110
+        # Bajar el espectrograma para evitar solapamiento con sliders de YOLO
+        # Los sliders de YOLO están en y=105-161 (2 sliders de 50px + spacing)
+        y_offset = 250
         x_offset = 10
         
         # Alpha blending
@@ -3656,11 +4153,33 @@ def stream_audio():
                     print(f"Error audio: HTTP {r.status_code}")
                     return
                 
+                # Obtener metadatos del stream para ajustar sample rate / canales
+                content_type = r.headers.get('Content-Type', '')
+                parsed_sample_rate = 44100
+                parsed_channels = 1
+                if content_type:
+                    for part in content_type.split(';'):
+                        part = part.strip().lower()
+                        if part.startswith('rate='):
+                            try:
+                                parsed_sample_rate = int(part.split('=')[1])
+                            except (ValueError, IndexError):
+                                parsed_sample_rate = 44100
+                        elif part.startswith('channels='):
+                            try:
+                                parsed_channels = int(part.split('=')[1])
+                            except (ValueError, IndexError):
+                                parsed_channels = 1
+                parsed_sample_rate = max(8000, min(parsed_sample_rate, 96000))
+                parsed_channels = max(1, min(parsed_channels, 2))
+
+                print(f"[AUDIO] Stream configurado: {parsed_channels} canal(es) @ {parsed_sample_rate} Hz")
+
                 # El servidor Android envía PCM crudo directamente, sin header WAV
                 # Inicializar PyAudio antes de leer datos
                 audio_stream = p.open(format=pyaudio.paInt16,
-                                      channels=1,
-                                      rate=44100,
+                                      channels=parsed_channels,
+                                      rate=parsed_sample_rate,
                                       output=True,
                                       frames_per_buffer=CHUNK)
                 
@@ -3670,13 +4189,15 @@ def stream_audio():
                         break
                     if chunk and audio_stream:
                         try:
-                            audio_stream.write(chunk)
+                            # Solo reproducir si no está muteado
+                            if not audio_playback_muted:
+                                audio_stream.write(chunk)
                             
                             if audio_detection_enabled:
                                 try:
                                     audio_buffer.put_nowait(chunk)
                                 except queue.Full:
-                                    pass
+                                    pass  # Buffer lleno, descartar chunk
                                     
                         except Exception as e:
                             print(f"Error audio escribiendo chunk: {e}")
@@ -3748,6 +4269,13 @@ def stop_audio():
         audio_thread.join(timeout=2)
     
     print("Audio detenido")
+
+def toggle_audio_mute():
+    """Mute/Unmute el playback de audio sin afectar la detección"""
+    global audio_playback_muted
+    audio_playback_muted = not audio_playback_muted
+    status = "MUTE" if audio_playback_muted else "UNMUTE"
+    print(f"[AUDIO] Playback {status}")
 
 def cambiar_ip_camara(cap_actual, nueva_ip=None):
     if audio_enabled:
@@ -3947,7 +4475,8 @@ def draw_audio_volume_icon(frame, mouse_pos, click_pos):
     y_text = 80
     
     # Posición del icono: más a la izquierda y ligeramente más arriba
-    icon = get_audio_volume_icon(muted=not audio_enabled)
+    # Mostrar mute si audio desactivado O si playback está muteado
+    icon = get_audio_volume_icon(muted=(not audio_enabled) or audio_playback_muted)
     if icon is None:
         return frame, False
     
@@ -4578,26 +5107,39 @@ def draw_rf_drone_sliders(frame, mouse_pos, click_pos):
     return frame, remaining_click
 
 def draw_audio_detection_indicator(frame):
+    global audio_detection_alert_time, audio_detection_max_confidence, AUDIO_VISUAL_MULTIPLIER
+    
     if not audio_detection_enabled:
         return frame
     
     with audio_detection_lock:
         is_drone = audio_detection_result["is_drone"]
-        confidence = audio_detection_result["confidence"]
+        confidence = audio_detection_result["confidence"]  # Ya viene con multiplicador aplicado
     
-    x = frame.shape[1] - 300
     y = frame.shape[0] - 30
     
     if is_drone:
         blink = int(time.time() * 2) % 2 == 0
         color = (0, 255, 255) if blink else (0, 128, 128)
-        text = t('audio_drone_detected', int(confidence * 100))
+        # Mostrar timestamp de la alerta si está disponible
+        if audio_detection_alert_time is not None:
+            alert_time_str = time.strftime("%H:%M:%S", time.localtime(audio_detection_alert_time))
+            # Mostrar el máximo alcanzado durante la alerta (con multiplicador visual)
+            max_visual = min(100, int(audio_detection_max_confidence * AUDIO_VISUAL_MULTIPLIER * 100))
+            text = f"AUDIO DRON DETECTADO A LAS {alert_time_str} - {max_visual}%"
+        else:
+            text = t('audio_drone_detected', int(confidence * 100))
     else:
         color = (0, 0, 255)
         text = t('no_audio_dron', int(confidence * 100))
     
-    overlay = frame.copy()
+    # Calcular tamaño del texto primero para posicionarlo correctamente
     text_size = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)[0]
+    # Posicionar más a la izquierda para que quepa el texto completo
+    # Dejar al menos 20 píxeles de margen desde el borde derecho
+    x = frame.shape[1] - text_size[0] - 20
+    
+    overlay = frame.copy()
     cv2.rectangle(overlay, (x - 5, y - 23), (x + text_size[0] + 5, y + 5), (0, 0, 0), -1)
     cv2.addWeighted(overlay, 0.7, frame, 0.3, 0, frame)
     
@@ -4751,18 +5293,9 @@ while not stop_program:
         
         frame_negro, audio_det_clicked = draw_audio_detection_toggle(frame_negro, current_mouse, current_click)
         if audio_det_clicked:
-            if audio_enabled:
-                toggle_audio_detection()
-                current_click = None
-            else:
-                def show_activate_audio():
-                    root = Tk()
-                    root.withdraw()
-                    root.attributes("-topmost", True)
-                    messagebox.showinfo(t('activate_audio_title'), t('activate_audio_first'))
-                    root.destroy()
-                threading.Thread(target=show_activate_audio, daemon=True).start()
-                current_click = None
+            # toggle_audio_detection() inicia el stream automáticamente si no está activo
+            toggle_audio_detection()
+            current_click = None
         
         # Tailscale
         frame_negro, tailscale_clicked = draw_tailscale_indicator(frame_negro, current_mouse, current_click)
@@ -4915,18 +5448,9 @@ while not stop_program:
         # 4. Detección audio
         frame, audio_det_clicked = draw_audio_detection_toggle(frame, current_mouse, current_click)
         if audio_det_clicked:
-            if audio_enabled:
-                toggle_audio_detection()
-                current_click = None
-            else:
-                def show_activate_audio():
-                    root = Tk()
-                    root.withdraw()
-                    root.attributes("-topmost", True)
-                    messagebox.showinfo(t('activate_audio_title'), t('activate_audio_first'))
-                    root.destroy()
-                threading.Thread(target=show_activate_audio, daemon=True).start()
-                current_click = None
+            # toggle_audio_detection() inicia el stream automáticamente si no está activo
+            toggle_audio_detection()
+            current_click = None
 
         # 5. Tailscale
         frame, tailscale_clicked = draw_tailscale_indicator(frame, current_mouse, current_click)
@@ -4977,6 +5501,9 @@ while not stop_program:
         elif key == ord('m') or key == ord('M'):
             if audio_enabled: stop_audio()
             else: start_audio()
+        elif key == ord('u') or key == ord('U'):
+            # Mute/Unmute playback sin afectar detección
+            toggle_audio_mute()
         elif key == ord('a') or key == ord('A'):
             toggle_audio_detection()
         elif key == ord('y') or key == ord('Y'):

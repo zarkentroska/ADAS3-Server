@@ -1,11 +1,11 @@
 {
   "slots": [
     {
-      "path": "/home/zarkentroska/Documentos/adas3/best.pt",
+      "path": "best.pt",
       "description": "Otro dataset de roboflow entrenado con YOLOv11"
     },
     {
-      "path": "/home/zarkentroska/Documentos/adas3/__best.pt",
+      "path": "__best.pt",
       "description": "Modelo por defecto (YOLOv8)"
     },
     {

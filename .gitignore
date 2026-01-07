@@ -11,6 +11,13 @@ build/
 dist/
 *.spec.bak
 
+# Ejecutables compilados (se suben a releases)
+ADAS3-Server-0.5Alpha-win-x64.exe
+ADAS3-Server-0.5Alpha-win-x64.exe.exe
+Adas3_Server_LInux_x64_v05
+DetectorDrones
+DetectorDrones.exe
+
 # Archivos de Python
 *.py[cod]
 *$py.class
