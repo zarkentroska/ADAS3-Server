@@ -21,10 +21,27 @@ except ImportError:
         sys.exit(1)
 
 # Configuración
-GITHUB_TOKEN = "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"
+PROJECT = Path("/home/zarkentroska/Documentos/adas3")
 REPO = "zarkentroska/ADAS3-Server"
 RELEASE_TAG = "v0.5Alpha"
-PROJECT = Path("/home/zarkentroska/Documentos/adas3")
+
+# Leer token desde variable de entorno o archivo local (no versionado)
+GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
+if not GITHUB_TOKEN:
+    # Intentar leer desde archivo local (no versionado)
+    token_file = PROJECT / ".github_token"
+    if token_file.exists():
+        try:
+            GITHUB_TOKEN = token_file.read_text().strip()
+        except Exception:
+            pass
+
+if not GITHUB_TOKEN:
+    print("ERROR: GITHUB_TOKEN no encontrado")
+    print("Configura el token de una de estas formas:")
+    print("  1. Variable de entorno: export GITHUB_TOKEN='tu_token'")
+    print("  2. Archivo local: echo 'tu_token' > .github_token")
+    sys.exit(1)
 
 os.chdir(PROJECT)
 
