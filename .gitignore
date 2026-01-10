@@ -48,5 +48,39 @@ Thumbs.db
 *.token
 .env
 
+# Configuración sensible de Tailscale (contiene credenciales)
+tailscale_config.json
+
+# Archivos de configuración del usuario (se generan automáticamente)
+config_camara.json
+language_config.json
+yolo_models_config.json
+tinysa_advanced_intervals.json
+
+# Scripts de utilidad y automatización (no necesarios para usuarios del código)
+remove_secret_from_history.sh
+remove_token_from_history.py
+fix_token.sh
+fix_git_remote.sh
+ejecutar_update_git.py
+update_token.sh
+actualizar_github.py
+update_git_repo.py
+build_linux_onefile.sh
+build_windows.bat
+
+# Archivos de entrenamiento/modelos temporales (no se usan en producción)
+best_model_checkpoint.h5
+training_history.npy
+drone_audio_model.tflite  # Solo se usa .h5 en el código
+
+# Archivos de escritorio (si existen)
+.desktop/
+
+# Archivos duplicados o temporales
+__best.pt
+*.exe.exe
+ADAS3-Server-0.5Alpha-win-x64.exe.exe
+
 
 

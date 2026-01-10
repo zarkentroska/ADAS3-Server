@@ -82,7 +82,7 @@ files_to_add = [
     ".gitignore",
     "ghlogo.png",
     "language_config.json",
-    "tailscale_config.json",
+    # "tailscale_config.json" - NO incluir: contiene credenciales sensibles
     "yolo_models_config.json",
     "README.md",
     "LICENSE",
@@ -209,26 +209,76 @@ if current_branch:
                     print("    (resuelve conflictos si los hay)")
                     print(f"    git push origin {current_branch}")
 
-# Push
-print("\n  Haciendo push...")
-if current_branch:
-    result = run_git_command(["push", "origin", current_branch], check=False)
-    if result and result.returncode == 0:
-        print(f"  ✓ Push realizado exitosamente a origin/{current_branch}")
-        if result.stdout:
-            for line in result.stdout.strip().split('\n'):
-                if line.strip() and not line.startswith('Enumerating'):
-                    print(f"    {line}")
-    else:
-        print("  ⚠ Error en push")
-        if result and result.stderr:
-            print(f"    {result.stderr.strip()[:200]}")
-        print("\n  Sugerencia: Puede haber conflictos. Intenta ejecutar:")
-        print(f"    git pull origin {current_branch}")
-        print(f"    git push origin {current_branch}")
+# Push - usar token en la URL directamente
+print("\n[7/7] Configurando autenticación y haciendo push...")
+
+# Leer token desde variable de entorno o archivo local
+GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
+if not GITHUB_TOKEN:
+    token_file = PROJECT / ".github_token"
+    if token_file.exists():
+        try:
+            GITHUB_TOKEN = token_file.read_text().strip()
+        except Exception:
+            pass
+
+if not GITHUB_TOKEN:
+    print("  ⚠ No se encontró token, Git puede pedir credenciales")
+    if current_branch:
+        result = run_git_command(["push", "origin", current_branch], check=False)
+        if result and result.returncode == 0:
+            print(f"  ✓ Push realizado exitosamente")
+        else:
+            print("  ⚠ Error en push - configura el token en .github_token")
+            print("  Ejecuta: ./update_token.sh para configurar un nuevo token")
 else:
-    print("  ⚠ No se pudo detectar la rama actual")
-    print("  Ejecuta manualmente: git pull && git push")
+    # Actualizar el remote con el token actual (importante si el token cambió)
+    REPO_NAME = "zarkentroska/ADAS3-Server"
+    remote_url = f"https://{GITHUB_TOKEN}@github.com/{REPO_NAME}.git"
+    
+    # Actualizar remote origin con el token actual
+    print("  Actualizando remote origin con token...")
+    result = run_git_command(["remote", "set-url", "origin", remote_url], check=False)
+    if result and result.returncode == 0:
+        print("  ✓ Remote actualizado")
+    else:
+        print("  ⚠ No se pudo actualizar remote (continuando...)")
+    
+    if current_branch:
+        # Configurar variables de entorno para evitar que Git pida credenciales
+        env = os.environ.copy()
+        env["GIT_ASKPASS"] = "echo"
+        env["GIT_TERMINAL_PROMPT"] = "0"
+        
+        # Hacer push usando origin (que ya tiene el token en la URL)
+        result = subprocess.run(
+            ["git", "push", "origin", current_branch],
+            cwd=str(PROJECT),
+            capture_output=True,
+            text=True,
+            env=env,
+            check=False
+        )
+        if result.returncode == 0:
+            print(f"  ✓ Push realizado exitosamente a origin/{current_branch}")
+            if result.stdout:
+                for line in result.stdout.strip().split('\n'):
+                    if line.strip() and not line.startswith('Enumerating'):
+                        print(f"    {line}")
+        else:
+            print("  ⚠ Error en push")
+            if result.stderr:
+                stderr = result.stderr.strip()
+                print(f"    {stderr[:300]}")
+                if "401" in stderr or "Invalid username or token" in stderr:
+                    print("\n  El token puede haber expirado. Ejecuta:")
+                    print("    ./update_token.sh")
+            else:
+                print("\n  Sugerencia: Verifica el token ejecutando:")
+                print("    python3 verify_and_push.py")
+    else:
+        print("  ⚠ No se pudo detectar la rama actual")
+        print("  Ejecuta manualmente: git pull && git push")
 
 print("\n" + "="*70)
 print("  ¡COMPLETADO!")

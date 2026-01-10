@@ -86,15 +86,38 @@ else:
     # Ejecutándose como script normal
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# Rutas absolutas a los recursos
-CONFIG_FILE = os.path.join(BASE_DIR, "config_camara.json")
-LANGUAGE_CONFIG_FILE = os.path.join(BASE_DIR, "language_config.json")
-TAILSCALE_CONFIG_FILE = os.path.join(BASE_DIR, "tailscale_config.json")
+def get_config_dir():
+    """Obtiene el directorio persistente para archivos de configuración.
+    En modo ejecutable, usa un directorio en el home del usuario.
+    En modo desarrollo, usa el directorio del script."""
+    if getattr(sys, 'frozen', False):
+        # Ejecutable compilado: usar directorio de configuración persistente
+        if os.name == 'nt':  # Windows
+            config_dir = os.path.join(os.environ.get('APPDATA', os.path.expanduser('~')), 'ADAS3')
+        else:  # Linux/Mac
+            config_dir = os.path.join(os.path.expanduser('~'), '.config', 'adas3')
+        # Crear directorio si no existe
+        os.makedirs(config_dir, exist_ok=True)
+        return config_dir
+    else:
+        # Modo desarrollo: usar directorio del script
+        return BASE_DIR
+
+# Directorio para archivos de configuración (persistente)
+CONFIG_DIR = get_config_dir()
+
+# Rutas a archivos de configuración (se guardan en CONFIG_DIR, que es persistente)
+CONFIG_FILE = os.path.join(CONFIG_DIR, "config_camara.json")
+LANGUAGE_CONFIG_FILE = os.path.join(CONFIG_DIR, "language_config.json")
+YOLO_MODELS_CONFIG = os.path.join(CONFIG_DIR, "yolo_models_config.json")
+ADVANCED_INTERVALS_FILE = os.path.join(CONFIG_DIR, "tinysa_advanced_intervals.json")
+
+# Rutas absolutas a los recursos (se cargan desde BASE_DIR, que está en el ejecutable)
+# TAILSCALE_CONFIG_FILE eliminado - no guardamos credenciales por seguridad
 TAILSCALE_INSTALLER_WIN = os.path.join(BASE_DIR, "tailscale-setup.exe")
 TAILSCALE_INSTALLER_LINUX = os.path.join(BASE_DIR, "tailscale-installer.sh")
 AUDIO_MODEL_PATH = os.path.join(BASE_DIR, "drone_audio_model.h5")
 YOLO_DEFAULT_MODEL = os.path.join(BASE_DIR, "best.pt")
-YOLO_MODELS_CONFIG = os.path.join(BASE_DIR, "yolo_models_config.json")
 AUDIO_MEAN_PATH = os.path.join(BASE_DIR, "audio_mean.npy")
 AUDIO_STD_PATH = os.path.join(BASE_DIR, "audio_std.npy")
 SETTINGS_ICON_PATH = os.path.join(BASE_DIR, "settings.png")
@@ -349,35 +372,12 @@ def guardar_ip(ip):
 
 # --- FUNCIONES TAILSCALE ---
 tailscale_running = False
-tailscale_username = ""
-tailscale_password = ""
 
-def cargar_tailscale_config():
-    """Carga la configuración de Tailscale"""
-    global tailscale_username, tailscale_password
-    if os.path.exists(TAILSCALE_CONFIG_FILE):
-        try:
-            with open(TAILSCALE_CONFIG_FILE, 'r', encoding='utf-8') as f:
-                config = json.load(f)
-                tailscale_username = config.get('username', '')
-                tailscale_password = config.get('password', '')
-        except Exception as e:
-            print(f"Error al cargar configuración Tailscale: {e}")
-            tailscale_username = ""
-            tailscale_password = ""
-
-def guardar_tailscale_config(username, password):
-    """Guarda la configuración de Tailscale"""
-    global tailscale_username, tailscale_password
-    try:
-        with open(TAILSCALE_CONFIG_FILE, 'w', encoding='utf-8') as f:
-            json.dump({'username': username, 'password': password}, f, indent=2)
-        tailscale_username = username
-        tailscale_password = password
-        return True
-    except Exception as e:
-        print(f"Error al guardar configuración Tailscale: {e}")
-        return False
+# NOTA: No guardamos credenciales de Tailscale porque:
+# 1. Tailscale maneja la autenticación de forma persistente después del primer login
+# 2. El usuario se autentica mediante OAuth en el navegador cuando ejecuta 'tailscale up'
+# 3. Windows/Linux guardan la sesión automáticamente
+# 4. Guardar credenciales en texto plano es un riesgo de seguridad
 
 def verificar_estado_tailscale():
     """Verifica el estado real de Tailscale y actualiza tailscale_running"""
@@ -847,8 +847,7 @@ TRANSLATIONS = {
         'tailscale_on': 'TAILSCALE: ON',
         'tailscale_off': 'TAILSCALE: OFF',
         'tailscale_config_title': 'Configuración Tailscale',
-        'tailscale_username': 'Usuario:',
-        'tailscale_password': 'Contraseña:',
+        # 'tailscale_username' y 'tailscale_password' eliminados - no se usan (Tailscale maneja auth)
         'tailscale_not_configured': 'Tailscale no configurado',
         'configure_tailscale_first': 'Configura Tailscale primero usando el botón de engranaje.',
         'tailscale_connecting': 'Conectando a Tailscale...',
@@ -950,8 +949,7 @@ TRANSLATIONS = {
         'tailscale_on': 'TAILSCALE: ON',
         'tailscale_off': 'TAILSCALE: OFF',
         'tailscale_config_title': 'Tailscale Configuration',
-        'tailscale_username': 'Username:',
-        'tailscale_password': 'Password:',
+        # 'tailscale_username' y 'tailscale_password' eliminados - no se usan
         'tailscale_not_configured': 'Tailscale not configured',
         'configure_tailscale_first': 'Configure Tailscale first using the gear button.',
         'tailscale_connecting': 'Connecting to Tailscale...',
@@ -1053,8 +1051,7 @@ TRANSLATIONS = {
         'tailscale_on': 'TAILSCALE: ON',
         'tailscale_off': 'TAILSCALE: OFF',
         'tailscale_config_title': 'Configuration Tailscale',
-        'tailscale_username': 'Utilisateur:',
-        'tailscale_password': 'Mot de passe:',
+        # 'tailscale_username' y 'tailscale_password' eliminados - no se usan
         'tailscale_not_configured': 'Tailscale non configuré',
         'configure_tailscale_first': 'Configurez Tailscale d\'abord en utilisant le bouton d\'engrenage.',
         'tailscale_connecting': 'Connexion à Tailscale...',
@@ -1156,8 +1153,7 @@ TRANSLATIONS = {
         'tailscale_on': 'TAILSCALE: ON',
         'tailscale_off': 'TAILSCALE: OFF',
         'tailscale_config_title': 'Configurazione Tailscale',
-        'tailscale_username': 'Utente:',
-        'tailscale_password': 'Password:',
+        # 'tailscale_username' y 'tailscale_password' eliminados - no se usan
         'tailscale_not_configured': 'Tailscale non configurato',
         'configure_tailscale_first': 'Configura prima Tailscale usando il pulsante ingranaggio.',
         'tailscale_connecting': 'Connessione a Tailscale...',
@@ -1259,8 +1255,7 @@ TRANSLATIONS = {
         'tailscale_on': 'TAILSCALE: ON',
         'tailscale_off': 'TAILSCALE: OFF',
         'tailscale_config_title': 'Configuração Tailscale',
-        'tailscale_username': 'Usuário:',
-        'tailscale_password': 'Senha:',
+        # 'tailscale_username' y 'tailscale_password' eliminados - no se usan
         'tailscale_not_configured': 'Tailscale não configurado',
         'configure_tailscale_first': 'Configure Tailscale primeiro usando o botão de engrenagem.',
         'tailscale_connecting': 'Conectando ao Tailscale...',
@@ -1756,8 +1751,8 @@ cargar_idioma()
 # Cargar umbral de audio
 cargar_audio_threshold()
 
-# Cargar configuración de Tailscale al inicio
-cargar_tailscale_config()
+# NOTA: No cargamos configuración de Tailscale - Tailscale maneja la autenticación persistentemente
+# El usuario se autentica mediante OAuth cuando ejecuta 'tailscale up'
 # Verificar estado real de Tailscale al iniciar
 verificar_estado_tailscale()
 
@@ -1883,7 +1878,7 @@ tinysa_sequence = []
 tinysa_sequence_index = 0
 TIN_YSA_SWEEPS_PER_RANGE = 5
 tinysa_current_label = ""
-ADVANCED_INTERVALS_FILE = os.path.join(BASE_DIR, "tinysa_advanced_intervals.json")
+# ADVANCED_INTERVALS_FILE ya está definido arriba usando CONFIG_DIR (persistente)
 last_advanced_intervals = []
 tinysa_detected = False
 tinysa_last_check = 0.0

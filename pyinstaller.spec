@@ -46,15 +46,17 @@ else:
 
 RESOURCE_FILES = [
     "best.pt",
-    "drone_audio_model.h5",
-    "drone_audio_model.tflite",
+    "drone_audio_model.h5",  # Solo .h5 se usa en el código (tf.keras.models.load_model)
+    # "drone_audio_model.tflite" - NO se usa en el código, eliminado
     "audio_mean.npy",
     "audio_std.npy",
-    "language_config.json",
-    "tailscale_config.json",
-    "config_camara.json",
-    "tinysa_advanced_intervals.json",
-    "yolo_models_config.json",
+    # NOTA: Los archivos JSON de configuración NO se incluyen aquí porque
+    # ahora se guardan en un directorio persistente del usuario (CONFIG_DIR)
+    # - language_config.json -> ~/.config/adas3/ (Linux) o %APPDATA%/ADAS3/ (Windows)
+    # - config_camara.json -> ~/.config/adas3/ (Linux) o %APPDATA%/ADAS3/ (Windows)
+    # - yolo_models_config.json -> ~/.config/adas3/ (Linux) o %APPDATA%/ADAS3/ (Windows)
+    # - tinysa_advanced_intervals.json -> ~/.config/adas3/ (Linux) o %APPDATA%/ADAS3/ (Windows)
+    # - tailscale_config.json -> NO se guarda (riesgo de seguridad)
     "__best.pt",
     # Archivos de Tailscale
     "tailscale-setup.exe",
