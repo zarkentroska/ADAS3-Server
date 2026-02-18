@@ -181,6 +181,26 @@ pip install -r requirements.txt
 python testcam.py
 ```
 
+### Dual environment strategy (GPU/CPU)
+
+The project keeps a single `requirements.txt` and switches only PyTorch profile depending on target machine:
+
+```bash
+# GPU profile (NVIDIA/CUDA) - default for this project
+pip install -r requirements.txt
+```
+
+```bash
+# CPU profile (for smaller local test envs)
+pip install -r requirements.txt
+pip uninstall -y torch torchvision triton
+pip uninstall -y nvidia-cublas-cu12 nvidia-cuda-cupti-cu12 nvidia-cuda-nvrtc-cu12 \
+  nvidia-cuda-runtime-cu12 nvidia-cudnn-cu12 nvidia-cufft-cu12 nvidia-cufile-cu12 \
+  nvidia-curand-cu12 nvidia-cusolver-cu12 nvidia-cusparse-cu12 nvidia-cusparselt-cu12 \
+  nvidia-nccl-cu12 nvidia-nvjitlink-cu12 nvidia-nvshmem-cu12 nvidia-nvtx-cu12
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+```
+
 #### Building executables
 
 **Windows (.exe):**
@@ -253,17 +273,17 @@ pyinstaller --noconfirm pyinstaller.spec
 - Confidence threshold: Adjustable parameters for detection sensitivity
 
 #### TinySA configuration
-- Advanced intervals stored in `tinysa_advanced_intervals.json`
+- Advanced intervals stored in `configs/tinysa_advanced_intervals.json` (development mode)
 - Custom frequency ranges can be configured
 - Scanning intervals are configurable
 
 ## 🔧 Configuration files
 
-- `config_camara.json` - Camera and general settings
-- `yolo_models_config.json` - YOLO model configuration
-- `language_config.json` - Language preference
-- `tailscale_config.json` - Tailscale settings
-- `tinysa_advanced_intervals.json` - TinySA frequency intervals
+- `configs/config_camara.json` - Camera and general settings (development mode)
+- `configs/yolo_models_config.json` - YOLO model configuration (development mode)
+- `configs/language_config.json` - Language preference (development mode)
+- `configs/tinysa_advanced_intervals.json` - TinySA frequency intervals (development mode)
+- In packaged mode, configs are stored in OS user config paths (`~/.config/adas3` on Linux, `%APPDATA%/ADAS3` on Windows)
 
 ## 🛠️ Development
 
@@ -271,15 +291,16 @@ pyinstaller --noconfirm pyinstaller.spec
 ```
 ADAS3-Server/
 ├── testcam.py                 # Main application script
-├── pyinstaller.spec          # PyInstaller configuration
-├── build_deb.sh              # Linux .deb build script
-├── BUILD_DEB.md              # Build documentation
-├── *.pt                      # YOLO model files
-├── *.h5                      # TensorFlow audio model
-├── *.npy                     # Audio normalization files
-├── *.json                    # Configuration files
-└── *.png, *.ico              # UI resources
+├── modules/                   # Auxiliary Python modules
+├── models/                    # Model/checkpoint files (.pt/.h5/.npy/.tflite)
+├── configs/                   # JSON configs (development mode)
+├── assets/icons/              # UI icons and logo
+├── installers/                # Tailscale installers
+├── pyinstaller.spec           # PyInstaller configuration
+└── icon.ico                   # App icon
 ```
+
+Generated/local folders such as `__pycache__/`, `.vscode/`, `build/`, and `dist/` are intentionally ignored in git to keep the repository clean.
 
 ### Technologies used
 - **Python 3.8+** - Programming language

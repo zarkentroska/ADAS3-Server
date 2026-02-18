@@ -45,11 +45,11 @@ else:
     print(f"Usando icono: {ICON_PATH}")
 
 RESOURCE_FILES = [
-    "best.pt",
-    "drone_audio_model.h5",  # Solo .h5 se usa en el código (tf.keras.models.load_model)
+    "models/best.pt",
+    "models/drone_audio_model.h5",  # Solo .h5 se usa en el código (tf.keras.models.load_model)
     # "drone_audio_model.tflite" - NO se usa en el código, eliminado
-    "audio_mean.npy",
-    "audio_std.npy",
+    "models/audio_mean.npy",
+    "models/audio_std.npy",
     # NOTA: Los archivos JSON de configuración NO se incluyen aquí porque
     # ahora se guardan en un directorio persistente del usuario (CONFIG_DIR)
     # - language_config.json -> ~/.config/adas3/ (Linux) o %APPDATA%/ADAS3/ (Windows)
@@ -57,24 +57,31 @@ RESOURCE_FILES = [
     # - yolo_models_config.json -> ~/.config/adas3/ (Linux) o %APPDATA%/ADAS3/ (Windows)
     # - tinysa_advanced_intervals.json -> ~/.config/adas3/ (Linux) o %APPDATA%/ADAS3/ (Windows)
     # - tailscale_config.json -> NO se guarda (riesgo de seguridad)
-    "__best.pt",
+    "models/__best.pt",
     # Archivos de Tailscale
-    "tailscale-setup.exe",
-    "tailscale-installer.sh",
-    # Iconos de audio
-    "vol.png",
-    "mute.png",
+    "installers/tailscale-setup.exe",
+    "installers/tailscale-installer.sh",
+    # Iconos UI
+    "assets/icons/vol.png",
+    "assets/icons/mute.png",
     # settings.png se incluye después para evitar conflictos con el icono
-    "settings.png",
+    "assets/icons/settings.png",
     # Logo de GitHub para la UI
-    "ghlogo.png",
+    "assets/icons/ghlogo.png",
 ]
 
 datas = []
 for resource in RESOURCE_FILES:
     src = os.path.join(BASE_DIR, resource)
     if os.path.exists(src):
-        datas.append((src, "."))
+        if resource.startswith("assets/icons/"):
+            datas.append((src, "assets/icons"))
+        elif resource.startswith("models/"):
+            datas.append((src, "models"))
+        elif resource.startswith("installers/"):
+            datas.append((src, "installers"))
+        else:
+            datas.append((src, "."))
 
 # No recoger datos automáticamente - PyInstaller detectará automáticamente
 # los archivos necesarios mediante análisis estático del código

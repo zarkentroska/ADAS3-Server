@@ -56,6 +56,7 @@ config_camara.json
 language_config.json
 yolo_models_config.json
 tinysa_advanced_intervals.json
+configs/*.json
 
 # Scripts de utilidad y automatización (no necesarios para usuarios del código)
 remove_secret_from_history.sh
@@ -73,12 +74,16 @@ build_windows.bat
 best_model_checkpoint.h5
 training_history.npy
 drone_audio_model.tflite  # Solo se usa .h5 en el código
+models/best_model_checkpoint.h5
+models/training_history.npy
+models/drone_audio_model.tflite
 
 # Archivos de escritorio (si existen)
 .desktop/
 
 # Archivos duplicados o temporales
 __best.pt
+models/__best.pt
 *.exe.exe
 ADAS3-Server-0.5Alpha-win-x64.exe.exe
 
