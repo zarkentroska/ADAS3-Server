@@ -2,6 +2,7 @@ import os
 import tkinter as tk
 import webbrowser
 from tkinter import messagebox, ttk
+from modules.ui_window_icon import apply_window_icon
 
 
 def show_language_selection_dialog(
@@ -18,6 +19,7 @@ def show_language_selection_dialog(
     root.title(t_func("language_selection_title"))
     root.attributes("-topmost", True)
     root.resizable(False, False)
+    apply_window_icon(root, base_dir=base_dir)
 
     main_frame = ttk.Frame(root, padding=20)
     main_frame.pack(fill="both", expand=True)
@@ -181,7 +183,7 @@ def show_language_selection_dialog(
 
     copyright_label = ttk.Label(
         footer_frame,
-        text="ADAS3 Server v0.5 |  Copyright (C) 2026 GNU GPL 3.0",
+        text="ADAS3 Server v0.7 |  Copyright (C) 2026 GNU GPL 3.0",
         font=("Arial", 8),
         foreground="gray",
     )

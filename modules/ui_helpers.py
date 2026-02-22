@@ -1,5 +1,6 @@
 import threading
 from tkinter import Tk, messagebox, simpledialog
+from modules.ui_window_icon import apply_window_icon
 
 
 def show_warning_async(translate_fn, title_key, message_key):
@@ -9,6 +10,7 @@ def show_warning_async(translate_fn, title_key, message_key):
         root = Tk()
         root.withdraw()
         root.attributes("-topmost", True)
+        apply_window_icon(root)
         messagebox.showwarning(translate_fn(title_key), translate_fn(message_key))
         root.destroy()
 
@@ -20,6 +22,7 @@ def solicitar_nueva_ip(ip_actual, t_func):
     root = Tk()
     root.withdraw()
     root.attributes("-topmost", True)
+    apply_window_icon(root)
 
     nueva_ip = simpledialog.askstring(
         t_func("change_camera_ip"),

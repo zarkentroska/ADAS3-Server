@@ -29,17 +29,14 @@ except Exception as e:
 # __file__ no está definido cuando PyInstaller ejecuta el spec mediante exec(),
 # así que usamos el directorio actual desde el que se invoca el comando.
 BASE_DIR = os.path.abspath(os.getcwd())
-ICON_PATH = os.path.join(BASE_DIR, "icon.ico")
+ICON_PATH = os.path.join(BASE_DIR, "adas3.ico")
 
 # Verificar que el icono existe, si no, usar None
 if not os.path.exists(ICON_PATH):
     print(f"Advertencia: No se encontró {ICON_PATH}")
     ICON_PATH = None
 else:
-    # Convertir a ruta absoluta normalizada para evitar problemas
-    # En Windows, usar barras normales y asegurar que sea absoluta
     ICON_PATH = os.path.normpath(os.path.abspath(ICON_PATH))
-    # En Windows, convertir barras invertidas a barras normales para PyInstaller
     if os.name == 'nt':
         ICON_PATH = ICON_PATH.replace('\\', '/')
     print(f"Usando icono: {ICON_PATH}")
@@ -71,6 +68,9 @@ RESOURCE_FILES = [
 ]
 
 datas = []
+# Incluir adas3.ico para icono de ventana/barra de tareas en runtime
+if os.path.exists(os.path.join(BASE_DIR, "adas3.ico")):
+    datas.append((os.path.join(BASE_DIR, "adas3.ico"), "."))
 for resource in RESOURCE_FILES:
     src = os.path.join(BASE_DIR, resource)
     if os.path.exists(src):
@@ -303,6 +303,7 @@ else:
         target_arch=None,
         codesign_identity=None,
         entitlements_file=None,
+        icon=ICON_PATH if ICON_PATH and os.path.exists(ICON_PATH) else None,
     )
     coll = None
 

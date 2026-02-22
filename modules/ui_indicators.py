@@ -3,6 +3,23 @@ import time
 import cv2
 import numpy as np
 
+_hovering_interactive = False
+
+
+def begin_hover_tracking():
+    global _hovering_interactive
+    _hovering_interactive = False
+
+
+def is_hovering_interactive():
+    return _hovering_interactive
+
+
+def _mark_hover(is_hover):
+    global _hovering_interactive
+    if is_hover:
+        _hovering_interactive = True
+
 
 def _draw_icon_overlay_button(frame, mouse_pos, click_pos, icon, x1, y1):
     """Dibuja un icono con alpha/hover/click en coordenadas absolutas."""
@@ -33,6 +50,7 @@ def _draw_icon_overlay_button(frame, mouse_pos, click_pos, icon, x1, y1):
 
     mx, my = mouse_pos
     is_hover = x1 <= mx <= x2 and y1 <= my <= y2
+    _mark_hover(is_hover)
     is_clicked = False
     if click_pos:
         cx_click, cy_click = click_pos
@@ -86,6 +104,7 @@ def draw_interactive_button(
 
     mx, my = mouse_pos
     is_hover = (x1 <= mx <= x2) and (y1 <= my <= y2)
+    _mark_hover(is_hover)
 
     is_clicked = False
     if click_pos:
@@ -238,6 +257,7 @@ def draw_ip_selector_button(frame, mouse_pos, click_pos, icon, ip_text):
 
     mx, my = mouse_pos
     is_hover = x1 <= mx <= x2 and y1 <= my <= y2
+    _mark_hover(is_hover)
     is_clicked = False
     if click_pos:
         cx, cy = click_pos

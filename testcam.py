@@ -29,8 +29,6 @@ if getattr(sys, 'frozen', False) and sys.platform != 'win32':  # Solo en Linux
 import cv2
 import time
 import copy
-import wave
-import tempfile
 import numpy as np
 import requests
 import pyaudio
@@ -118,6 +116,17 @@ from modules.tinysa_hardware_engine import (
     send_tinysa_command as send_tinysa_command_engine,
 )
 from modules.telegram_notifier import TelegramEvent, TelegramNotifier
+from modules.telegram_helpers import (
+    TELEGRAM_DEFAULT_CONFIG,
+    normalize_telegram_config as _normalize_telegram_config,
+    load_telegram_config_from_file,
+    save_telegram_config_to_file,
+    detect_telegram_chat_id as detect_telegram_chat_id_core,
+    build_telegram_message as _build_telegram_message,
+    save_frame_for_telegram as _save_frame_for_telegram,
+    save_rf_image_for_telegram as _save_rf_image_for_telegram_core,
+    save_audio_clip_for_telegram as _save_audio_clip_for_telegram_core,
+)
 from modules.rf_detection import detect_drone_rf as detect_drone_rf_core
 from modules.network_runtime import LanDiscoveryManager, ClientDetectionEventWorker
 from modules.translations_data import TRANSLATIONS
@@ -162,6 +171,11 @@ from modules.ui_tinysa_options import (
 )
 from modules.ui_tailscale_options import show_tailscale_config_dialog as show_tailscale_config_dialog_ui
 from modules.ui_yolo_options import show_yolo_options_window as show_yolo_options_window_ui
+from modules.ui_window_icon import set_opencv_window_icon
+from modules.ui_sliders import (
+    draw_yolo_sliders as draw_yolo_sliders_core,
+    draw_rf_drone_sliders as draw_rf_drone_sliders_core,
+)
 
 # Obtener la ruta absoluta del directorio donde está este script
 # Si se ejecuta desde un ejecutable de PyInstaller, usar sys._MEIPASS
@@ -334,69 +348,18 @@ def save_yolo_models_config():
     )
 
 
-TELEGRAM_DEFAULT_CONFIG = {
-    "enabled": False,
-    "token": "",
-    "chat_id": "",
-    "cooldowns": {
-        "yolo": 30.0,
-        "rf": 30.0,
-        "audio": 30.0,
-    },
-    "send_yolo_photo": True,
-    "send_rf_image": True,
-    "send_audio_clip": True,
-}
 telegram_config = copy.deepcopy(TELEGRAM_DEFAULT_CONFIG)
-
-
-def _normalize_telegram_config(raw_config):
-    merged = copy.deepcopy(TELEGRAM_DEFAULT_CONFIG)
-    if not isinstance(raw_config, dict):
-        return merged
-
-    merged["enabled"] = bool(raw_config.get("enabled", merged["enabled"]))
-    merged["token"] = str(raw_config.get("token", merged["token"])).strip()
-    merged["chat_id"] = str(raw_config.get("chat_id", merged["chat_id"])).strip()
-    merged["send_yolo_photo"] = bool(raw_config.get("send_yolo_photo", merged["send_yolo_photo"]))
-    merged["send_rf_image"] = bool(raw_config.get("send_rf_image", merged["send_rf_image"]))
-    merged["send_audio_clip"] = bool(raw_config.get("send_audio_clip", merged["send_audio_clip"]))
-
-    cooldowns_raw = raw_config.get("cooldowns", {})
-    if isinstance(cooldowns_raw, dict):
-        for key, default_value in merged["cooldowns"].items():
-            value = cooldowns_raw.get(key, default_value)
-            try:
-                parsed = float(value)
-            except (TypeError, ValueError):
-                parsed = default_value
-            if parsed < 0:
-                parsed = 0.0
-            merged["cooldowns"][key] = parsed
-
-    return merged
 
 
 def load_telegram_config():
     global telegram_config
-    loaded = {}
-    if os.path.exists(TELEGRAM_CONFIG_FILE):
-        try:
-            with open(TELEGRAM_CONFIG_FILE, "r", encoding="utf-8") as f:
-                loaded = json.load(f)
-        except Exception as exc:
-            print(f"{t('telegram_config_load_error')} ({exc})")
-    telegram_config = _normalize_telegram_config(loaded)
+    telegram_config = load_telegram_config_from_file(TELEGRAM_CONFIG_FILE, t)
     save_telegram_config()
     return telegram_config
 
 
 def save_telegram_config():
-    try:
-        with open(TELEGRAM_CONFIG_FILE, "w", encoding="utf-8") as f:
-            json.dump(telegram_config, f, indent=2, ensure_ascii=False)
-    except Exception as exc:
-        print(f"{t('telegram_config_save_error')} ({exc})")
+    save_telegram_config_to_file(telegram_config, TELEGRAM_CONFIG_FILE, t)
 
 
 def get_telegram_cooldowns():
@@ -435,33 +398,7 @@ def save_telegram_ui_config(new_config):
 
 
 def detect_telegram_chat_id(token):
-    token = str(token or "").strip()
-    if not token:
-        return None, t("telegram_chat_id_missing_token")
-
-    try:
-        response = requests.get(
-            f"https://api.telegram.org/bot{token}/getUpdates",
-            timeout=12,
-        )
-        response.raise_for_status()
-        payload = response.json()
-        if not payload.get("ok", False):
-            return None, payload.get("description", t("telegram_chat_id_detect_error"))
-
-        results = payload.get("result", [])
-        for update in reversed(results):
-            message = update.get("message") or update.get("edited_message") or update.get("channel_post")
-            if not isinstance(message, dict):
-                continue
-            chat = message.get("chat", {})
-            chat_id = chat.get("id")
-            if chat_id is not None:
-                return str(chat_id), None
-
-        return None, t("telegram_chat_id_not_found")
-    except Exception as exc:
-        return None, f"{t('telegram_chat_id_detect_error')}: {exc}"
+    return detect_telegram_chat_id_core(token, t)
 
 
 
@@ -599,6 +536,7 @@ def draw_tailscale_settings_icon(frame, mouse_pos, click_pos):
 def show_tailscale_config_dialog():
     """Wrapper del diálogo de Tailscale (implementación en ui_tailscale_options.py)."""
     return show_tailscale_config_dialog_ui(
+        base_dir=BASE_DIR,
         t_func=t,
         tailscale_installed_fn=tailscale_installed,
         tailscale_installer_win=TAILSCALE_INSTALLER_WIN,
@@ -702,8 +640,6 @@ print(f"Iniciando con IP guardada: {base_url}")
 
 # Estados auxiliares Windows / conexión video
 video_connection_manager = VideoConnectionManager()
-windows_cursor_fixed = False
-windows_cursor_warning = False
 
 # --- CONFIGURACIÓN DE AUDIO ---
 CHUNK = 1024
@@ -793,12 +729,6 @@ def get_pyaudio_instance():
     return p
 
 
-def _get_telegram_temp_dir():
-    temp_dir = os.path.join(tempfile.gettempdir(), "adas3_telegram")
-    os.makedirs(temp_dir, exist_ok=True)
-    return temp_dir
-
-
 def _append_audio_recent_chunk(chunk):
     global audio_recent_total_bytes
     if not chunk:
@@ -819,78 +749,16 @@ def _append_audio_recent_chunk(chunk):
             audio_recent_total_bytes -= len(removed)
 
 
-def _build_telegram_message(event_type, *, timestamp, confidence=None, frequency_hz=None):
-    hour_text = time.strftime("%H:%M:%S", time.localtime(timestamp))
-
-    if event_type == "yolo":
-        if confidence is None:
-            return t("telegram_yolo_message", hour_text)
-        return t("telegram_yolo_message_conf", hour_text, int(confidence * 100))
-
-    if event_type == "rf":
-        if frequency_hz:
-            return t("telegram_rf_message_freq", hour_text, frequency_hz / 1e6, int((confidence or 0.0) * 100))
-        return t("telegram_rf_message", hour_text, int((confidence or 0.0) * 100))
-
-    return t("telegram_audio_message", hour_text, int((confidence or 0.0) * 100))
-
-
-def _save_frame_for_telegram(frame, event_type):
-    if frame is None:
-        return None
-    temp_dir = _get_telegram_temp_dir()
-    timestamp_ms = int(time.time() * 1000)
-    output_path = os.path.join(temp_dir, f"{event_type}_{timestamp_ms}.png")
-    success = cv2.imwrite(output_path, frame)
-    if not success:
-        return None
-    return output_path
-
-
 def _save_rf_image_for_telegram():
-    with tinysa_render_lock:
-        rf_image = None if tinysa_image_ready is None else tinysa_image_ready.copy()
-
-    if rf_image is None:
-        return None
-
-    try:
-        bgr_image = cv2.cvtColor(rf_image, cv2.COLOR_RGBA2BGR)
-    except Exception:
-        return None
-
-    return _save_frame_for_telegram(bgr_image, "rf")
+    return _save_rf_image_for_telegram_core(tinysa_render_lock, tinysa_image_ready)
 
 
 def _save_audio_clip_for_telegram(clip_seconds=5):
-    with audio_recent_lock:
-        if not audio_recent_chunks:
-            return None
-        raw_audio = b"".join(audio_recent_chunks)
-        sample_rate = int(max(audio_stream_sample_rate, 8000))
-        channels = int(max(audio_stream_channels, 1))
-
-    max_bytes = int(sample_rate * channels * 2 * max(clip_seconds, 1))
-    if len(raw_audio) > max_bytes:
-        raw_audio = raw_audio[-max_bytes:]
-
-    if not raw_audio:
-        return None
-
-    temp_dir = _get_telegram_temp_dir()
-    timestamp_ms = int(time.time() * 1000)
-    output_path = os.path.join(temp_dir, f"audio_{timestamp_ms}.wav")
-    try:
-        with wave.open(output_path, "wb") as wav_file:
-            wav_file.setnchannels(channels)
-            wav_file.setsampwidth(2)
-            wav_file.setframerate(sample_rate)
-            wav_file.writeframes(raw_audio)
-    except Exception as exc:
-        print(f"[TELEGRAM] No se pudo crear clip WAV: {exc}")
-        return None
-
-    return output_path
+    return _save_audio_clip_for_telegram_core(
+        audio_recent_lock, audio_recent_chunks,
+        audio_stream_sample_rate, audio_stream_channels,
+        clip_seconds=clip_seconds,
+    )
 
 
 def enqueue_telegram_notification(
@@ -907,6 +775,7 @@ def enqueue_telegram_notification(
         timestamp=timestamp,
         confidence=confidence,
         frequency_hz=frequency_hz,
+        t_func=t,
     )
     event = TelegramEvent(
         event_type=event_type,
@@ -2269,39 +2138,6 @@ def dibujar_detecciones_yolo(frame, boxes_data):
 # La gestión de reconexión/captura de video vive en video_connection.py
 
 
-def ensure_windows_cursor(window_title):
-    """
-    Reemplaza el cursor en ventanas OpenCV por el puntero clásico.
-    """
-    global windows_cursor_fixed, windows_cursor_warning
-
-    if windows_cursor_fixed or os.name != "nt":
-        return
-
-    try:
-        import ctypes
-
-        user32 = ctypes.windll.user32
-        hwnd = user32.FindWindowW(None, window_title)
-        if not hwnd:
-            return
-
-        IDC_ARROW = 32512
-        cursor = user32.LoadCursorW(None, IDC_ARROW)
-        GCL_HCURSOR = -12
-
-        if ctypes.sizeof(ctypes.c_void_p) == ctypes.sizeof(ctypes.c_long):
-            user32.SetClassLongW(hwnd, GCL_HCURSOR, cursor)
-        else:
-            user32.SetClassLongPtrW(hwnd, GCL_HCURSOR, cursor)
-        user32.SetCursor(cursor)
-        windows_cursor_fixed = True
-        print("[WINDOWS] Cursor estándar aplicado.")
-    except Exception as e:
-        if not windows_cursor_warning:
-            print(f"[WINDOWS] No se pudo ajustar el cursor: {e}")
-            windows_cursor_warning = True
-
 # --- AUDIO STREAMING ---
 def stream_audio():
     global audio_stream, stop_audio_thread, audio_stream_sample_rate, audio_stream_channels
@@ -2745,166 +2581,53 @@ def show_yolo_options_window():
     )
 
 
-def draw_slider_control(frame, label, value, min_val, max_val, origin, size, mouse_pos, click_pos, slider_key):
-    """Dibuja un slider semi-transparente y devuelve nuevo valor si se hizo click."""
-    global yolo_slider_active, rf_slider_active
-    x, y = origin
-    width, height = size
-    overlay = frame.copy()
-
-    # Panel
-    panel_y1 = y
-    panel_y2 = y + height
-    cv2.rectangle(overlay, (x, panel_y1), (x + width, panel_y2), (20, 20, 20), -1)
-    # El panel y la línea del track se componen en un solo overlay para reducir copias.
-
-    # Textos
-    text_y = panel_y1 + 18
-    cv2.putText(overlay, label, (x + 6, text_y), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (220, 220, 255), 1)
-    cv2.putText(overlay, f"{value:.2f}", (x + width - 55, text_y), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (220, 220, 255), 1)
-
-    slider_offset = 10
-    panel_y1 += slider_offset
-
-    # Slider track semitransparente
-    track_x1 = x + 20
-    track_x2 = x + width - 20
-    track_y = panel_y1 + height - 25
-    cv2.line(overlay, (track_x1, track_y), (track_x2, track_y), (210, 210, 210), 6, cv2.LINE_AA)
-
-    # Handle
-    ratio = (value - min_val) / (max_val - min_val)
-    ratio = max(0.0, min(1.0, ratio))
-    handle_x = int(track_x1 + ratio * (track_x2 - track_x1))
-    cv2.circle(overlay, (handle_x, track_y), 10, (255, 255, 255), -1, cv2.LINE_AA)
-    cv2.circle(overlay, (handle_x, track_y), 10, (0, 102, 255), 2, cv2.LINE_AA)
-    cv2.addWeighted(overlay, 0.55, frame, 0.45, 0, frame)
-
-    # Clic
-    new_value = None
-    active_slider = yolo_slider_active if slider_key.startswith("conf") or slider_key.startswith("iou") else rf_slider_active
-    
-    if click_pos:
-        cx, cy = click_pos
-        if track_y - 18 <= cy <= track_y + 18 and track_x1 <= cx <= track_x2:
-            ratio = (cx - track_x1) / (track_x2 - track_x1)
-            ratio = max(0.0, min(1.0, ratio))
-            new_value = min_val + ratio * (max_val - min_val)
-            if slider_key.startswith("rf_"):
-                rf_slider_active = slider_key
-            else:
-                yolo_slider_active = slider_key
-    elif active_slider == slider_key and mouse_is_down:
-        mx, my = mouse_pos
-        ratio = (mx - track_x1) / (track_x2 - track_x1)
-        ratio = max(0.0, min(1.0, ratio))
-        new_value = min_val + ratio * (max_val - min_val)
-    elif active_slider == slider_key and not mouse_is_down:
-        if slider_key.startswith("rf_"):
-            rf_slider_active = None
-        else:
-            yolo_slider_active = None
-
-    return frame, new_value
-
-
 def draw_yolo_sliders(frame, mouse_pos, click_pos):
-    """Muestra sliders de parámetros YOLO si está activado."""
-    global yolo_conf_threshold, yolo_iou_threshold
-    if not yolo_enabled:
-        return frame, click_pos
+    global yolo_conf_threshold, yolo_iou_threshold, yolo_slider_active
 
-    slider_width = int(frame.shape[1] * 0.16)
-    slider_height = 50
-    x = 50
-    y_start = 105
-    spacing = 6
+    def _set_active(key):
+        global yolo_slider_active
+        yolo_slider_active = key
 
-    specs = [
-        ("Confidence threshold", yolo_conf_threshold, 0.05, 0.99, "conf"),
-        ("IoU threshold", yolo_iou_threshold, 0.05, 0.99, "iou"),
-    ]
-
-    # Working copy of click to avoid multiple updates con el mismo clic
-    remaining_click = click_pos
-
-    for idx, (label, value, v_min, v_max, key) in enumerate(specs):
-        y = y_start + idx * (slider_height + spacing)
-        frame, new_val = draw_slider_control(
-            frame,
-            label,
-            value,
-            v_min,
-            v_max,
-            (x, y),
-            (slider_width, slider_height),
-            mouse_pos,
-            remaining_click,
-            key
-        )
-
-        if new_val is not None:
-            with yolo_threshold_lock:
-                if key == "conf":
-                    yolo_conf_threshold = new_val
-                else:
-                    yolo_iou_threshold = new_val
-            remaining_click = None
-
+    frame, remaining_click, new_conf, new_iou = draw_yolo_sliders_core(
+        frame, mouse_pos, click_pos,
+        yolo_enabled=yolo_enabled,
+        yolo_conf_threshold=yolo_conf_threshold,
+        yolo_iou_threshold=yolo_iou_threshold,
+        yolo_threshold_lock=yolo_threshold_lock,
+        mouse_is_down=mouse_is_down,
+        yolo_slider_active=yolo_slider_active,
+        set_yolo_slider_active_fn=_set_active,
+    )
+    yolo_conf_threshold = new_conf
+    yolo_iou_threshold = new_iou
     return frame, remaining_click
 
+
 def draw_rf_drone_sliders(frame, mouse_pos, click_pos):
-    """Muestra sliders de parámetros de detección RF de drones si está activado."""
-    global rf_peak_threshold, rf_min_peak_height_db, rf_min_peak_width_mhz, rf_max_peak_width_mhz
-    global rf_sliders_visible
-    
-    if not rf_sliders_visible or not tinysa_running:
-        return frame, click_pos
+    global rf_peak_threshold, rf_min_peak_height_db
+    global rf_min_peak_width_mhz, rf_max_peak_width_mhz, rf_slider_active
 
-    slider_width = int(frame.shape[1] * 0.20)
-    slider_height = 50
-    x = 50
-    y_start = 105
-    spacing = 6
+    def _set_active(key):
+        global rf_slider_active
+        rf_slider_active = key
 
-    specs = [
-        ("Umbral Potencia (dBm)", rf_peak_threshold, -100.0, -50.0, "rf_peak_thresh"),
-        ("Altura Min Ruido (dB)", rf_min_peak_height_db, 1.0, 40.0, "rf_min_height"),
-        ("Ancho Min (MHz)", rf_min_peak_width_mhz, 1.0, 30.0, "rf_min_width"),
-        ("Ancho Max (MHz)", rf_max_peak_width_mhz, 20.0, 80.0, "rf_max_width"),
-    ]
-
-    # Working copy of click to avoid multiple updates con el mismo clic
-    remaining_click = click_pos
-
-    for idx, (label, value, v_min, v_max, key) in enumerate(specs):
-        y = y_start + idx * (slider_height + spacing)
-        frame, new_val = draw_slider_control(
-            frame,
-            label,
-            value,
-            v_min,
-            v_max,
-            (x, y),
-            (slider_width, slider_height),
-            mouse_pos,
-            remaining_click,
-            key
-        )
-
-        if new_val is not None:
-            with rf_detection_params_lock:
-                if key == "rf_peak_thresh":
-                    rf_peak_threshold = new_val
-                elif key == "rf_min_height":
-                    rf_min_peak_height_db = new_val
-                elif key == "rf_min_width":
-                    rf_min_peak_width_mhz = new_val
-                elif key == "rf_max_width":
-                    rf_max_peak_width_mhz = new_val
-            print(f"[RF SLIDER] {label}: {new_val:.2f}")
-            remaining_click = None  # Consumir el click
-
+    frame, remaining_click, params = draw_rf_drone_sliders_core(
+        frame, mouse_pos, click_pos,
+        rf_sliders_visible=rf_sliders_visible,
+        tinysa_running=tinysa_running,
+        rf_peak_threshold=rf_peak_threshold,
+        rf_min_peak_height_db=rf_min_peak_height_db,
+        rf_min_peak_width_mhz=rf_min_peak_width_mhz,
+        rf_max_peak_width_mhz=rf_max_peak_width_mhz,
+        rf_detection_params_lock=rf_detection_params_lock,
+        mouse_is_down=mouse_is_down,
+        rf_slider_active=rf_slider_active,
+        set_rf_slider_active_fn=_set_active,
+    )
+    rf_peak_threshold = params["rf_peak_threshold"]
+    rf_min_peak_height_db = params["rf_min_peak_height_db"]
+    rf_min_peak_width_mhz = params["rf_min_peak_width_mhz"]
+    rf_max_peak_width_mhz = params["rf_max_peak_width_mhz"]
     return frame, remaining_click
 
 def draw_audio_detection_indicator(frame):
@@ -2946,18 +2669,23 @@ print("  I - Cambiar IP")
 lan_discovery_manager.start()
 start_client_event_worker()
 
-cv2.namedWindow(window_name, cv2.WINDOW_NORMAL | cv2.WINDOW_GUI_NORMAL)
+# Linux: WINDOW_GUI_NORMAL oculta toolbar (flechas, lupa, guardar, etc.) y barra de estado.
+# Windows: WINDOW_GUI_NORMAL fuerza cursor cruceta, por eso solo WINDOW_NORMAL.
+if os.name == "nt":
+    cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+else:
+    cv2.namedWindow(window_name, cv2.WINDOW_NORMAL | cv2.WINDOW_GUI_NORMAL)
 DEFAULT_WINDOW_SIZE = (1280, 720)
 current_window_size = list(DEFAULT_WINDOW_SIZE)
 cv2.resizeWindow(window_name, *DEFAULT_WINDOW_SIZE)
 # IMPRESCINDIBLE: Activar el callback del ratón
 cv2.setMouseCallback(window_name, mouse_handler)
-ensure_windows_cursor(window_name)
 
 cap = None
 stop_program = False
 yolo_prev_detected = False
 rf_prev_detected = False
+opencv_icon_applied = False
 
 video_connection_manager.schedule(video_url, force=True)
 refresh_telegram_notifier_settings()
@@ -2981,7 +2709,6 @@ while not stop_program:
     current_mouse = (mouse_x, mouse_y)
     poll_adb_connection()
     poll_tinysa_presence()
-    ensure_windows_cursor(window_name)
 
     cap, new_cap_ready = video_connection_manager.process_pending(cap, video_url)
     if new_cap_ready:
@@ -3119,7 +2846,9 @@ while not stop_program:
             cv2.resizeWindow(window_name, *DEFAULT_WINDOW_SIZE)
             current_window_size[:] = DEFAULT_WINDOW_SIZE
         cv2.imshow(window_name, frame_negro)
-        
+        if not opencv_icon_applied and set_opencv_window_icon(window_name, BASE_DIR):
+            opencv_icon_applied = True
+
         # GESTIÓN DE TECLAS EN MODO NO-SIGNAL
         key = cv2.waitKey(100) & 0xFF
         if key == ord('q'):
@@ -3330,8 +3059,9 @@ while not stop_program:
         if tuple(current_window_size) != DEFAULT_WINDOW_SIZE:
             cv2.resizeWindow(window_name, *DEFAULT_WINDOW_SIZE)
             current_window_size[:] = DEFAULT_WINDOW_SIZE
-        
         cv2.imshow(window_name, frame)
+        if not opencv_icon_applied and set_opencv_window_icon(window_name, BASE_DIR):
+            opencv_icon_applied = True
 
         key = cv2.waitKey(1) & 0xFF
         

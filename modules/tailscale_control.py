@@ -5,6 +5,7 @@ import threading
 import time
 import webbrowser
 from tkinter import Tk, messagebox
+from modules.ui_window_icon import apply_window_icon
 
 
 def _show_message_async(kind, title, text):
@@ -12,6 +13,7 @@ def _show_message_async(kind, title, text):
         root = Tk()
         root.withdraw()
         root.attributes("-topmost", True)
+        apply_window_icon(root)
         if kind == "error":
             messagebox.showerror(title, text)
         else:
@@ -21,6 +23,27 @@ def _show_message_async(kind, title, text):
     threading.Thread(target=_runner, daemon=True).start()
 
 
+def _looks_like_state_store_error(raw_text):
+    text = str(raw_text or "").lower()
+    return (
+        "state store failed to initialize" in text
+        or "state-store-init-error" in text
+        or "failed to migrate existing tpm-seal" in text
+        or "failed to unseal" in text
+    )
+
+
+def _build_state_store_error_message(t_func, status_text):
+    details = str(status_text or "").strip()
+    first_line = ""
+    if details:
+        first_line = details.splitlines()[0].strip()
+    base = t_func("tailscale_state_store_error")
+    if first_line:
+        return f"{base}\n\n{first_line}"
+    return base
+
+
 def install_tailscale(
     *,
     t_func,
@@ -28,66 +51,48 @@ def install_tailscale(
     tailscale_installer_linux,
     tailscale_installed_fn,
 ):
-    """Instala Tailscale en modo silencioso."""
+    """Instala Tailscale en modo silencioso y devuelve (ok, error_text)."""
     if os.name == "nt":
         installer_path = tailscale_installer_win
         if not os.path.exists(installer_path):
-            _show_message_async("error", t_func("error"), t_func("tailscale_installer_not_found"))
-            return False
+            return False, t_func("tailscale_installer_not_found")
 
-        def install_thread():
-            try:
-                cmd = f'"{installer_path}" /S'
-                result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=120)
-                if result.returncode == 0:
-                    time.sleep(3)
-                    if tailscale_installed_fn():
-                        _show_message_async(
-                            "info",
-                            t_func("tailscale_install_success"),
-                            t_func("tailscale_install_success"),
-                        )
-                    else:
-                        _show_message_async(
-                            "info",
-                            t_func("tailscale_install_success"),
-                            t_func("tailscale_install_success")
-                            + "\n\n"
-                            + "Si no se detecta, reinicia la aplicación.",
-                        )
-                else:
-                    raise Exception(result.stderr)
-            except Exception as e:
-                print(f"Error instalando Tailscale: {e}")
-                _show_message_async("error", t_func("error"), t_func("tailscale_install_error"))
+        try:
+            cmd = f'"{installer_path}" /S'
+            result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=180)
+            if result.returncode != 0:
+                details = (result.stderr or result.stdout or "").strip()
+                if details:
+                    return False, f"{t_func('tailscale_install_error')}\n\n{details[:300]}"
+                return False, t_func("tailscale_install_error")
 
-        threading.Thread(target=install_thread, daemon=True).start()
-        return True
+            time.sleep(3)
+            if tailscale_installed_fn():
+                return True, ""
+            return False, t_func("tailscale_install_error")
+        except Exception as e:
+            print(f"Error instalando Tailscale: {e}")
+            return False, t_func("tailscale_install_error")
 
     installer_path = tailscale_installer_linux
     if not os.path.exists(installer_path):
-        _show_message_async("error", t_func("error"), t_func("tailscale_installer_not_found"))
-        return False
+        return False, t_func("tailscale_installer_not_found")
 
-    def install_thread():
-        try:
-            os.chmod(installer_path, 0o755)
-            cmd = f'sudo bash "{installer_path}"'
-            result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=120)
-            if result.returncode == 0:
-                _show_message_async(
-                    "info",
-                    t_func("tailscale_install_success"),
-                    t_func("tailscale_install_success"),
-                )
-            else:
-                raise Exception(result.stderr)
-        except Exception as e:
-            print(f"Error instalando Tailscale: {e}")
-            _show_message_async("error", t_func("error"), t_func("tailscale_install_error"))
-
-    threading.Thread(target=install_thread, daemon=True).start()
-    return True
+    try:
+        os.chmod(installer_path, 0o755)
+        cmd = f'sudo bash "{installer_path}"'
+        result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=180)
+        if result.returncode != 0:
+            details = (result.stderr or result.stdout or "").strip()
+            if details:
+                return False, f"{t_func('tailscale_install_error')}\n\n{details[:300]}"
+            return False, t_func("tailscale_install_error")
+        if tailscale_installed_fn():
+            return True, ""
+        return False, t_func("tailscale_install_error")
+    except Exception as e:
+        print(f"Error instalando Tailscale: {e}")
+        return False, t_func("tailscale_install_error")
 
 
 def toggle_tailscale(
@@ -118,6 +123,17 @@ def toggle_tailscale(
             status_result = subprocess.run(status_cmd, shell=True, capture_output=True, text=True, timeout=5)
             print(f"[TAILSCALE] tailscale status returncode: {status_result.returncode}")
             print(f"[TAILSCALE] tailscale status stdout: {status_result.stdout[:200]}")
+            status_text = f"{status_result.stdout}\n{status_result.stderr}".strip()
+
+            if is_windows and _looks_like_state_store_error(status_text):
+                print("[TAILSCALE] Detectado error de state store/TPM. Abortando intento de conexión.")
+                _show_message_async(
+                    "error",
+                    t_func("tailscale_error"),
+                    _build_state_store_error_message(t_func, status_text),
+                )
+                set_running_fn(False)
+                return
 
             auth_url = None
             if status_result.stdout:
@@ -156,6 +172,16 @@ def toggle_tailscale(
                             text=True,
                             timeout=3,
                         )
+                        status_check_text = f"{status_check.stdout}\n{status_check.stderr}".strip()
+                        if _looks_like_state_store_error(status_check_text):
+                            print("[TAILSCALE] Error de state store detectado tras tailscale up.")
+                            _show_message_async(
+                                "error",
+                                t_func("tailscale_error"),
+                                _build_state_store_error_message(t_func, status_check_text),
+                            )
+                            set_running_fn(False)
+                            return
                         if status_check.stdout:
                             url_match = re.search(
                                 r"https://login\.tailscale\.com/a/[^\s\n]+",
@@ -207,6 +233,16 @@ def toggle_tailscale(
                             text=True,
                             timeout=5,
                         )
+                        status_check_text = f"{status_check.stdout}\n{status_check.stderr}".strip()
+                        if is_windows and _looks_like_state_store_error(status_check_text):
+                            print("[TAILSCALE] Error persistente de state store detectado en verificación.")
+                            _show_message_async(
+                                "error",
+                                t_func("tailscale_error"),
+                                _build_state_store_error_message(t_func, status_check_text),
+                            )
+                            set_running_fn(False)
+                            return
                         if status_check.returncode == 0:
                             if "Logged in" in status_check.stdout or "100." in status_check.stdout:
                                 set_running_fn(True)

@@ -2,6 +2,7 @@ import json
 import os
 import tkinter as tk
 from tkinter import messagebox, ttk
+from modules.ui_window_icon import apply_window_icon
 
 
 def show_advanced_interval_dialog(
@@ -16,6 +17,7 @@ def show_advanced_interval_dialog(
     dialog.title(t_func("advanced_interval_title"))
     dialog.attributes("-topmost", True)
     dialog.resizable(False, False)
+    apply_window_icon(dialog)
     dialog.transient(parent)
     dialog.grab_set()
     dialog.lift()
@@ -122,6 +124,7 @@ def show_tinysa_menu(
     root.title(t_func("tinysa_mode_selection"))
     root.attributes("-topmost", True)
     root.resizable(False, False)
+    apply_window_icon(root)
 
     main_frame = ttk.Frame(root, padding=15)
     main_frame.pack(fill="both", expand=True)

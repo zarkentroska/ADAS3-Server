@@ -1,6 +1,7 @@
 import os
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
+from modules.ui_window_icon import apply_window_icon
 
 
 def show_yolo_options_window(
@@ -16,6 +17,7 @@ def show_yolo_options_window(
     root.title(translate_fn("yolo_options_title"))
     root.attributes("-topmost", True)
     root.resizable(False, False)
+    apply_window_icon(root)
 
     main_frame = ttk.Frame(root, padding=15)
     main_frame.pack(fill="both", expand=True)

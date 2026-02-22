@@ -297,7 +297,7 @@ ADAS3-Server/
 ├── assets/icons/              # UI icons and logo
 ├── installers/                # Tailscale installers
 ├── pyinstaller.spec           # PyInstaller configuration
-└── icon.ico                   # App icon
+└── adas3.ico                  # App icon
 ```
 
 Generated/local folders such as `__pycache__/`, `.vscode/`, `build/`, and `dist/` are intentionally ignored in git to keep the repository clean.
@@ -330,6 +330,9 @@ See LICENSE file for details.
 - Added server-to-client detection event worker for YOLO, TensorFlow audio, and RF alerts (`/adas3/detection-event`).
 - Improved RF workflows for 5 GHz anomaly-based detection with baseline loading and custom interval support.
 - Refactored networking/event logic into dedicated modules to keep the main runtime more maintainable.
+- Replaced icon.ico with adas3.ico for main window and taskbar; option dialogs use settings.png.
+- Linux: hide OpenCV toolbar (arrows, zoom, save, etc.) via WINDOW_GUI_NORMAL for a cleaner UI.
+- Extracted telegram_helpers, ui_sliders, and ui_window_icon modules; removed dead cursor/hover code.
 
 ## 📚 Related projects
 

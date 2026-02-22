@@ -1,10 +1,13 @@
 import os
+import threading
 import tkinter as tk
 import webbrowser
 from tkinter import messagebox, ttk
+from modules.ui_window_icon import apply_window_icon
 
 
 def show_tailscale_config_dialog(
+    base_dir,
     t_func,
     tailscale_installed_fn,
     tailscale_installer_win,
@@ -19,6 +22,7 @@ def show_tailscale_config_dialog(
     root.title(t_func("tailscale_config_title"))
     root.attributes("-topmost", True)
     root.resizable(False, False)
+    apply_window_icon(root, base_dir=base_dir)
 
     main_frame = ttk.Frame(root, padding=20)
     main_frame.pack(fill="both", expand=True)
@@ -43,17 +47,78 @@ def show_tailscale_config_dialog(
         if installer_exists:
             install_btn_frame = ttk.Frame(main_frame)
             install_btn_frame.pack(fill="x", pady=(0, 15))
+            install_button = None
 
             def on_install():
-                if messagebox.askyesno(t_func("install_tailscale"), t_func("installing_tailscale")):
-                    install_tailscale_fn()
+                progress_win = tk.Toplevel(root)
+                progress_win.title(t_func("install_tailscale"))
+                progress_win.attributes("-topmost", True)
+                progress_win.resizable(False, False)
+                progress_win.protocol("WM_DELETE_WINDOW", lambda: None)
+                apply_window_icon(progress_win, base_dir=base_dir)
 
-            ttk.Button(
+                pframe = ttk.Frame(progress_win, padding=16)
+                pframe.pack(fill="both", expand=True)
+                ttk.Label(
+                    pframe,
+                    text=t_func("tailscale_install_wait_message"),
+                    wraplength=320,
+                    justify="left",
+                ).pack(anchor="w", pady=(0, 10))
+                progress = ttk.Progressbar(pframe, orient="horizontal", mode="indeterminate", length=300)
+                progress.pack(fill="x")
+                progress.start(11)
+
+                if install_button is not None:
+                    install_button.configure(state="disabled")
+
+                def _finish(ok, err_text):
+                    try:
+                        progress.stop()
+                    except Exception:
+                        pass
+                    try:
+                        progress_win.destroy()
+                    except Exception:
+                        pass
+                    if install_button is not None:
+                        install_button.configure(state="normal")
+
+                    if ok:
+                        messagebox.showinfo(
+                            t_func("tailscale_install_success"),
+                            t_func("tailscale_service_installed"),
+                        )
+                        root.destroy()
+                    else:
+                        messagebox.showerror(
+                            t_func("error"),
+                            err_text or t_func("tailscale_install_error"),
+                        )
+
+                def _worker():
+                    ok = False
+                    err_text = ""
+                    try:
+                        result = install_tailscale_fn()
+                        if isinstance(result, tuple):
+                            ok = bool(result[0])
+                            err_text = str(result[1] or "")
+                        else:
+                            ok = bool(result)
+                    except Exception as e:
+                        err_text = str(e)
+                    root.after(0, lambda: _finish(ok, err_text))
+
+                threading.Thread(target=_worker, daemon=True).start()
+
+            install_button = ttk.Button(
                 install_btn_frame,
                 text=t_func("install_tailscale"),
                 command=on_install,
                 width=25,
-            ).pack()
+            )
+            install_button.pack()
         else:
             no_installer_label = ttk.Label(
                 main_frame,
