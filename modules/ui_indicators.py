@@ -353,7 +353,7 @@ def draw_audio_detection_indicator(
         text = t_func("no_audio_dron", int(confidence * 100))
 
     text_size = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)[0]
-    x = frame.shape[1] - text_size[0] - 20
+    x = (frame.shape[1] - text_size[0]) // 2
 
     overlay = frame.copy()
     cv2.rectangle(overlay, (x - 5, y - 23), (x + text_size[0] + 5, y + 5), (0, 0, 0), -1)
