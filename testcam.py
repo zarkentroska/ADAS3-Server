@@ -833,9 +833,11 @@ rf_flat_baselines_by_label = {}
 rf_flat_prev_levels_by_label = {}
 rf_flat_detection_history_by_label = {}
 rf_flat_loading_label = ""
+rf_flat_calibration_index = 0
+rf_flat_5g_labels = []
 rf_flat_baseline_start_time = None
-rf_flat_baseline_target_sweeps = 30
-RF_FLAT_BASELINE_TARGET_SWEEPS = 10
+rf_flat_baseline_target_sweeps = 15
+RF_FLAT_BASELINE_TARGET_SWEEPS = 15
 RF_FLAT_BASELINE_MAX_SECONDS = 120.0
 
 # Parámetros ajustables de detección RF (con sliders)
@@ -900,10 +902,10 @@ def build_tinysa_sequence(selection, custom_data=None, advanced_ranges=None):
     if selection == "preset1":
         sequence.append(_preset_to_range(TINYSA_PRESETS["Normal"], "FPV-Normal 2.442 GHz"))
     elif selection == "preset5gdet":
-        # Modo dedicado 5 GHz con calibración de baseline previa.
+        # Modo dedicado 5 GHz con calibración de baseline previa (5725–5850 MHz).
         sequence.append({
-            "start": 5809500000,
-            "stop": 5849500000,
+            "start": 5725000000,
+            "stop": 5850000000,
             "points": TINYSA_QUICK_POINTS,
             "sweeps": TINYSA_QUICK_SWEEPS,
             "label": "FPV 5 GHz modo deteccion",
@@ -1068,6 +1070,7 @@ def detect_drone_rf(freqs, levels):
     global rf_flat_baseline_loading, rf_flat_baseline_ready, rf_flat_baseline_levels
     global rf_flat_baselines_by_label, rf_flat_prev_levels_by_label, rf_flat_detection_history_by_label
     global rf_flat_loading_label, rf_flat_baseline_start_time, rf_flat_baseline_target_sweeps
+    global rf_flat_calibration_index, rf_flat_5g_labels
 
     def _clamp01(value):
         return max(0.0, min(1.0, value))
@@ -1089,12 +1092,17 @@ def detect_drone_rf(freqs, levels):
 
         baseline_entry = rf_flat_baselines_by_label.get(active_label)
 
-        if rf_flat_baseline_loading and rf_flat_loading_label != active_label:
-            rf_flat_baseline_levels = []
-            rf_flat_loading_label = active_label
-            rf_flat_baseline_start_time = time.time()
+        if rf_flat_baseline_loading:
+            # Calibración secuencial: solo acumulamos datos del intervalo que estamos calibrando.
+            if rf_flat_calibration_index >= len(rf_flat_5g_labels):
+                rf_flat_baseline_loading = False
+                rf_flat_baseline_ready = True
+                return {"is_drone": False, "confidence": 0.0, "frequency": None}
+            expected_label = rf_flat_5g_labels[rf_flat_calibration_index]
+            if active_label != expected_label:
+                # Ignorar barridos de otros intervalos hasta terminar el actual.
+                return {"is_drone": False, "confidence": 0.0, "frequency": None}
 
-        if rf_flat_baseline_loading and rf_flat_loading_label == active_label:
             now_time = time.time()
             target_sweeps = int(max(3, rf_flat_baseline_target_sweeps))
             max_seconds = RF_FLAT_BASELINE_MAX_SECONDS
@@ -1108,7 +1116,6 @@ def detect_drone_rf(freqs, levels):
                 if levels.shape[0] == expected_len:
                     rf_flat_baseline_levels.append(levels.copy())
                 else:
-                    # Ignorar barridos de tamaño inconsistente para no romper la calibración.
                     return {"is_drone": False, "confidence": 0.0, "frequency": None}
 
             elapsed = now_time - rf_flat_baseline_start_time
@@ -1122,25 +1129,40 @@ def detect_drone_rf(freqs, levels):
                     baseline_mean = np.mean(baseline_stack, axis=0)
                     baseline_std = np.std(baseline_stack, axis=0)
                     baseline_std = np.maximum(baseline_std, 1.0)
-                    rf_flat_baselines_by_label[active_label] = {
+                    rf_flat_baselines_by_label[expected_label] = {
                         "mean": baseline_mean,
                         "std": baseline_std,
                     }
-                    rf_flat_baseline_loading = False
-                    rf_flat_baseline_ready = True
-                    rf_flat_detection_history_by_label[active_label] = []
-                    rf_flat_prev_levels_by_label[active_label] = None
-                    rf_flat_baseline_start_time = None
-                    print("[RF 5G] Baseline completada, detección activa.")
+                    rf_flat_detection_history_by_label[expected_label] = []
+                    rf_flat_prev_levels_by_label[expected_label] = None
+                    rf_flat_calibration_index += 1
+                    rf_flat_baseline_levels = []
+                    rf_flat_baseline_start_time = time.time()
+                    rf_flat_loading_label = (
+                        rf_flat_5g_labels[rf_flat_calibration_index]
+                        if rf_flat_calibration_index < len(rf_flat_5g_labels)
+                        else ""
+                    )
+                    if rf_flat_calibration_index >= len(rf_flat_5g_labels):
+                        rf_flat_baseline_loading = False
+                        rf_flat_baseline_ready = True
+                        rf_flat_baseline_start_time = None
+                        print("[RF 5G] Baseline completada para todos los intervalos, detección activa.")
+                    else:
+                        print(f"[RF 5G] Baseline completada intervalo {rf_flat_calibration_index}/{len(rf_flat_5g_labels)}.")
                 except Exception as e:
                     print(f"[RF 5G] Error calibrando baseline: {e}")
                     rf_flat_baseline_levels = []
-                    rf_flat_baseline_loading = True
-                    rf_flat_baseline_ready = False
                     rf_flat_baseline_start_time = now_time
             return {"is_drone": False, "confidence": 0.0, "frequency": None}
 
         if baseline_entry is None:
+            try:
+                rf_flat_calibration_index = rf_flat_5g_labels.index(active_label)
+            except (ValueError, AttributeError):
+                rf_flat_calibration_index = 0
+                if active_label and (not rf_flat_5g_labels or active_label not in rf_flat_5g_labels):
+                    rf_flat_5g_labels.append(active_label)
             rf_flat_baseline_levels = [levels.copy()]
             rf_flat_baseline_loading = True
             rf_flat_baseline_ready = False
@@ -1153,6 +1175,10 @@ def detect_drone_rf(freqs, levels):
         if levels.shape != baseline_mean.shape:
             # Si cambió el número de puntos para ese intervalo, recalibrar ese intervalo.
             rf_flat_baselines_by_label.pop(active_label, None)
+            try:
+                rf_flat_calibration_index = rf_flat_5g_labels.index(active_label)
+            except (ValueError, AttributeError):
+                rf_flat_calibration_index = 0
             rf_flat_baseline_levels = [levels.copy()]
             rf_flat_baseline_loading = True
             rf_flat_baseline_ready = False
@@ -1355,8 +1381,8 @@ def start_tinysa_with_sequence(sequence):
     global rf_5g_detection_mode, rf_flat_baseline_loading, rf_flat_baseline_ready
     global rf_flat_baseline_levels, rf_flat_baselines_by_label, rf_flat_prev_levels_by_label
     global rf_flat_detection_history_by_label, rf_flat_loading_label, rf_flat_baseline_start_time
-    global rf_flat_baseline_target_sweeps
-    
+    global rf_flat_baseline_target_sweeps, rf_flat_calibration_index, rf_flat_5g_labels
+
     if not sequence:
         print("No hay secuencia configurada para TinySA.")
         return False
@@ -1366,13 +1392,15 @@ def start_tinysa_with_sequence(sequence):
     current_tinysa_config = tinysa_sequence[0]
     tinysa_current_label = current_tinysa_config.get("label", "")
     rf_5g_detection_mode = any(cfg.get("rf_mode") == "5g_detection" for cfg in tinysa_sequence)
+    rf_flat_5g_labels = [str(cfg.get("label", "")).strip() for cfg in tinysa_sequence if cfg.get("rf_mode") == "5g_detection"]
+    rf_flat_calibration_index = 0
     rf_flat_baseline_loading = rf_5g_detection_mode
     rf_flat_baseline_ready = False
     rf_flat_baseline_levels = []
     rf_flat_baselines_by_label = {}
     rf_flat_prev_levels_by_label = {}
     rf_flat_detection_history_by_label = {}
-    rf_flat_loading_label = tinysa_current_label if rf_5g_detection_mode else ""
+    rf_flat_loading_label = rf_flat_5g_labels[0] if rf_flat_5g_labels else ""
     rf_flat_baseline_start_time = time.time() if rf_5g_detection_mode else None
     rf_flat_baseline_target_sweeps = RF_FLAT_BASELINE_TARGET_SWEEPS
     
@@ -1551,7 +1579,7 @@ def toggle_tinysa():
     global rf_5g_detection_mode, rf_flat_baseline_loading, rf_flat_baseline_ready
     global rf_flat_baseline_levels, rf_flat_baselines_by_label, rf_flat_prev_levels_by_label
     global rf_flat_detection_history_by_label, rf_flat_loading_label, rf_flat_baseline_start_time
-    global rf_flat_baseline_target_sweeps
+    global rf_flat_baseline_target_sweeps, rf_flat_calibration_index, rf_flat_5g_labels
 
     if tinysa_running:
         # Apagar
@@ -1594,6 +1622,8 @@ def toggle_tinysa():
         rf_flat_prev_levels_by_label = {}
         rf_flat_detection_history_by_label = {}
         rf_flat_loading_label = ""
+        rf_flat_calibration_index = 0
+        rf_flat_5g_labels = []
         rf_flat_baseline_start_time = None
         rf_flat_baseline_target_sweeps = RF_FLAT_BASELINE_TARGET_SWEEPS
         print("TinySA Desactivado")
@@ -1829,7 +1859,16 @@ def overlay_tinysa_graph(frame):
             target = int(max(3, rf_flat_baseline_target_sweeps))
             progress = min(len(rf_flat_baseline_levels), target)
             status_text = t("rf_flat_loading_message")
-            progress_text = t("rf_flat_loading_progress", progress, target)
+            if rf_flat_5g_labels and len(rf_flat_5g_labels) > 1:
+                progress_text = t(
+                    "rf_flat_loading_progress_interval",
+                    rf_flat_calibration_index + 1,
+                    len(rf_flat_5g_labels),
+                    progress,
+                    target,
+                )
+            else:
+                progress_text = t("rf_flat_loading_progress", progress, target)
             if rf_flat_loading_label:
                 status_text = f"{status_text} [{rf_flat_loading_label}]"
             cv2.rectangle(graph, (6, 32), (panel_w - 6, 58), (0, 0, 0), -1)

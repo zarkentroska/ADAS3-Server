@@ -12,7 +12,7 @@ def show_advanced_interval_dialog(
     advanced_intervals_file,
     prefills,
 ):
-    """Diálogo para configurar hasta 5 intervalos personalizados."""
+    """Diálogo para configurar hasta 8 intervalos personalizados."""
     dialog = tk.Toplevel(parent)
     dialog.title(t_func("advanced_interval_title"))
     dialog.attributes("-topmost", True)
@@ -26,10 +26,10 @@ def show_advanced_interval_dialog(
     frame = ttk.Frame(dialog, padding=10)
     frame.pack(fill="both", expand=True)
 
-    ttk.Label(frame, text=t_func("up_to_5_intervals")).grid(row=0, column=0, columnspan=5, pady=(0, 10))
+    ttk.Label(frame, text=t_func("up_to_8_intervals")).grid(row=0, column=0, columnspan=5, pady=(0, 10))
 
     entries = []
-    for i in range(5):
+    for i in range(8):
         start_var = tk.StringVar()
         stop_var = tk.StringVar()
         sweeps_var = tk.StringVar(value=str(default_sweeps))
@@ -95,7 +95,7 @@ def show_advanced_interval_dialog(
         dialog.destroy()
 
     btn_frame = ttk.Frame(frame)
-    btn_frame.grid(row=7, column=0, columnspan=5, pady=(15, 0))
+    btn_frame.grid(row=9, column=0, columnspan=5, pady=(15, 0))
     ttk.Button(btn_frame, text=t_func("ok"), command=on_ok, width=12).pack(side="left", padx=5)
     ttk.Button(btn_frame, text=t_func("cancel"), command=on_cancel, width=12).pack(side="left", padx=5)
 
