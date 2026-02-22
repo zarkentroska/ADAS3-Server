@@ -22,6 +22,11 @@ This application is part of a client-server architecture project that works toge
   <p><em>Screenshot of the ADAS3 Server user interface</em></p>
 </div>
 
+<div align="center">
+  <img src="https://raw.githubusercontent.com/zarkentroska/ADAS3-Server/main/assets/UI.png" alt="ADAS3 Server Interface" width="800">
+  <p><em>NEW: Now with Telegram Bot notifications full integration</em></p>
+</div>
+
 ## 🎯 Main features
 
 ### 🎥 Video analysis
