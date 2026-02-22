@@ -1,6 +1,7 @@
 import time
 
 import cv2
+import numpy as np
 
 
 def _draw_icon_overlay_button(frame, mouse_pos, click_pos, icon, x1, y1):
@@ -217,6 +218,48 @@ def draw_ip_settings_icon(frame, mouse_pos, click_pos, icon, ip_text):
     y_center = 15
     y1 = y_center - h // 2
     return _draw_icon_overlay_button(frame, mouse_pos, click_pos, icon, x1, y1)
+
+
+def draw_ip_selector_button(frame, mouse_pos, click_pos, icon, ip_text):
+    """Dibuja un pequeño selector (flecha abajo) junto al icono de IP."""
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    text_size, _ = cv2.getTextSize(ip_text, font, 0.5, 2)
+    y_center = 15
+
+    icon_w = icon.shape[1] if icon is not None else 16
+    gear_right = 10 + text_size[0] + 20 + icon_w
+
+    btn_w = 18
+    btn_h = 16
+    x1 = gear_right + 6
+    y1 = y_center - btn_h // 2
+    x2 = x1 + btn_w
+    y2 = y1 + btn_h
+
+    mx, my = mouse_pos
+    is_hover = x1 <= mx <= x2 and y1 <= my <= y2
+    is_clicked = False
+    if click_pos:
+        cx, cy = click_pos
+        if x1 <= cx <= x2 and y1 <= cy <= y2:
+            is_clicked = True
+
+    overlay = frame.copy()
+    cv2.rectangle(overlay, (x1, y1), (x2, y2), (0, 0, 0), -1)
+    cv2.addWeighted(overlay, 0.45 if not is_hover else 0.60, frame, 0.55 if not is_hover else 0.40, 0, frame)
+    cv2.rectangle(frame, (x1, y1), (x2, y2), (255, 255, 255) if is_hover else (140, 140, 140), 1)
+
+    tri = np.array(
+        [
+            [x1 + btn_w // 2 - 4, y1 + btn_h // 2 - 1],
+            [x1 + btn_w // 2 + 4, y1 + btn_h // 2 - 1],
+            [x1 + btn_w // 2, y1 + btn_h // 2 + 4],
+        ],
+        dtype=np.int32,
+    )
+    cv2.fillConvexPoly(frame, tri, (255, 255, 255))
+
+    return frame, is_clicked
 
 
 def draw_audio_volume_icon(frame, mouse_pos, click_pos, icon):

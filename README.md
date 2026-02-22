@@ -1,5 +1,5 @@
 # ADAS3 Server
-Version: 0.5 Alpha
+Version: 0.7
 
 <div align="left">
   <a href="https://www.python.org/">
@@ -140,15 +140,15 @@ Full support for 5 languages:
 </div>
 
 #### Windows
-1. Download `ADAS3-Server-0.5Alpha-win-x64.exe` from [Releases](https://github.com/zarkentroska/ADAS3-Server/releases)
+1. Download `ADAS3-Server-0.7-win-x64.exe` from [Releases](https://github.com/zarkentroska/ADAS3-Server/releases)
 2. Run the installer
 3. Launch the application
 
 #### Linux (Debian/Ubuntu)
-1. Download `adas3-server-0.5alpha_amd64.deb` from [Releases](https://github.com/zarkentroska/ADAS3-Server/releases)
+1. Download `adas3-server-0.7_amd64.deb` from [Releases](https://github.com/zarkentroska/ADAS3-Server/releases)
 2. Install the package:
    ```bash
-   sudo dpkg -i adas3-server-0.5alpha_amd64.deb
+   sudo dpkg -i adas3-server-0.7_amd64.deb
    ```
 3. Launch from terminal: `adas3` or from applications menu
 
@@ -212,7 +212,7 @@ pyinstaller --noconfirm pyinstaller.spec
 **Linux (.deb):**
 ```bash
 ./build_deb.sh
-# Output: adas3-server-0.5alpha_amd64.deb
+# Output: adas3-server-0.7_amd64.deb
 ```
 
 ## 🎮 Usage
@@ -324,16 +324,12 @@ See LICENSE file for details.
 
 ## 🔄 Version history
 
-### v0.5 Alpha
-- Initial release with all main features
-- YOLO-based drone detection
-- TensorFlow audio analysis
-- TinySA Ultra integration
-- Tailscale VPN support
-- Multi-language support (5 languages)
-- Windows and Linux executables
-- Configurable YOLO model slots
-- Real-time video and audio streaming
+### v0.7
+- Added Telegram notifications with localized messages and media attachments (YOLO snapshot, RF image, TensorFlow audio clip).
+- Added LAN client discovery via UDP beacon (`adas3-client-discovery`) and a filtered IP selector based on beacon announcements.
+- Added server-to-client detection event worker for YOLO, TensorFlow audio, and RF alerts (`/adas3/detection-event`).
+- Improved RF workflows for 5 GHz anomaly-based detection with baseline loading and custom interval support.
+- Refactored networking/event logic into dedicated modules to keep the main runtime more maintainable.
 
 ## 📚 Related projects
 

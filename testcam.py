@@ -119,6 +119,7 @@ from modules.tinysa_hardware_engine import (
 )
 from modules.telegram_notifier import TelegramEvent, TelegramNotifier
 from modules.rf_detection import detect_drone_rf as detect_drone_rf_core
+from modules.network_runtime import LanDiscoveryManager, ClientDetectionEventWorker
 from modules.translations_data import TRANSLATIONS
 from modules.ui_helpers import show_warning_async, solicitar_nueva_ip as solicitar_nueva_ip_ui
 from modules.ui_assets import (
@@ -143,6 +144,7 @@ from modules.ui_indicators import (
     draw_audio_volume_icon as draw_audio_volume_icon_ui,
     draw_interactive_button as draw_interactive_button_ui,
     draw_ip_indicator as draw_ip_indicator_ui,
+    draw_ip_selector_button as draw_ip_selector_button_ui,
     draw_language_indicator as draw_language_indicator_ui,
     draw_telegram_indicator as draw_telegram_indicator_ui,
     draw_ip_settings_icon as draw_ip_settings_icon_ui,
@@ -242,6 +244,7 @@ yolo_options_thread = None
 tailscale_options_thread = None
 telegram_options_thread = None
 language_options_thread = None
+ip_selector_thread = None
 
 # --- VARIABLES GLOBALES UI ---
 mouse_x, mouse_y = -1, -1
@@ -254,6 +257,30 @@ last_adb_check = 0
 ADB_TARGET_IP = "127.0.0.1:8080"
 ADB_CHECK_INTERVAL = 5.0
 last_wifi_ip = None
+LAN_DISCOVERY_UDP_PORT = 39000
+LAN_DISCOVERY_BEACON_TYPE = "adas3-client-discovery"
+LAN_DISCOVERY_MAX_AGE_SECONDS = 25.0
+CLIENT_EVENT_ENDPOINT_PATH = "/adas3/detection-event"
+CLIENT_EVENT_TIMEOUT_SECONDS = 1.6
+CLIENT_EVENT_TYPE = "adas3-server-detection"
+CLIENT_EVENT_DEFAULT_COOLDOWNS = {
+    "yolo": 10.0,
+    "rf": 10.0,
+    "tensorflow": 10.0,
+}
+lan_discovery_manager = LanDiscoveryManager(
+    adb_target_ip=ADB_TARGET_IP,
+    beacon_port=LAN_DISCOVERY_UDP_PORT,
+    beacon_type=LAN_DISCOVERY_BEACON_TYPE,
+    max_age_seconds=LAN_DISCOVERY_MAX_AGE_SECONDS,
+)
+client_event_worker = ClientDetectionEventWorker(
+    targets_supplier=lan_discovery_manager.get_recent_targets,
+    endpoint_path=CLIENT_EVENT_ENDPOINT_PATH,
+    timeout_seconds=CLIENT_EVENT_TIMEOUT_SECONDS,
+    event_type=CLIENT_EVENT_TYPE,
+    cooldowns=CLIENT_EVENT_DEFAULT_COOLDOWNS,
+)
 
 def mouse_handler(event, x, y, flags, param):
     """Callback para manejar eventos del ratón"""
@@ -890,6 +917,23 @@ def enqueue_telegram_notification(
     )
     telegram_notifier.enqueue(event)
 
+
+def start_client_event_worker():
+    client_event_worker.start()
+
+
+def stop_client_event_worker():
+    client_event_worker.stop()
+
+
+def enqueue_client_detection_event(event_type, *, timestamp, confidence=None, frequency_hz=None):
+    client_event_worker.enqueue(
+        event_type,
+        timestamp=timestamp,
+        confidence=confidence,
+        frequency_hz=frequency_hz,
+    )
+
 # --- CONFIGURACIÓN TINYSA ULTRA+ ---
 # Soporta dos modos: serial directo (PC) o HTTP (Android)
 tinysa_serial = None
@@ -912,6 +956,18 @@ rf_drone_detection_result = {"is_drone": False, "confidence": 0.0, "frequency": 
 rf_drone_detection_lock = threading.Lock()
 rf_drone_detection_enabled = True
 rf_drone_detection_history = []  # Historial de detecciones para persistencia
+rf_5g_detection_mode = False
+rf_flat_baseline_loading = False
+rf_flat_baseline_ready = False
+rf_flat_baseline_levels = []
+rf_flat_baselines_by_label = {}
+rf_flat_prev_levels_by_label = {}
+rf_flat_detection_history_by_label = {}
+rf_flat_loading_label = ""
+rf_flat_baseline_start_time = None
+rf_flat_baseline_target_sweeps = 30
+RF_FLAT_BASELINE_TARGET_SWEEPS = 10
+RF_FLAT_BASELINE_MAX_SECONDS = 120.0
 
 # Parámetros ajustables de detección RF (con sliders)
 rf_peak_threshold = -80.0  # dBm - umbral mínimo para considerar un pico significativo
@@ -939,10 +995,15 @@ TINYSA_HTTP_READ_TIMEOUT = 120.0
 TINYSA_STREAM_CHUNK_SIZE = 8192  # 8KB para JSON con 200 puntos (~5KB)
 TINYSA_NO_DATA_TIMEOUT = 12.0
 TINYSA_POINTS = 200  # Puntos por barrido
+TINYSA_ALT_POINTS = 120  # Menos puntos en 5 GHz para mantener fluidez
+TINYSA_ALT_SWEEPS = 1    # Barrido rápido por sub-banda en FPV-Alt
+TINYSA_QUICK_POINTS = 80
+TINYSA_QUICK_SWEEPS = 1
 
 TINYSA_PRESETS = {
     "Normal": {"center": 2442000000, "span": 100000000, "points": TINYSA_POINTS},
-    "Alt":    {"start": 5725000000, "stop": 5850000000, "points": TINYSA_POINTS}
+    # Rango alto clásico de 5.8 GHz (mantenido para compatibilidad en modo MIX).
+    "Alt":    {"start": 5725000000, "stop": 5875000000, "points": TINYSA_POINTS}
 }
 
 
@@ -969,11 +1030,16 @@ def build_tinysa_sequence(selection, custom_data=None, advanced_ranges=None):
 
     if selection == "preset1":
         sequence.append(_preset_to_range(TINYSA_PRESETS["Normal"], "FPV-Normal 2.442 GHz"))
-    elif selection == "preset2":
-        sequence.append(_preset_to_range(TINYSA_PRESETS["Alt"], "FPV-Alt 5.8 GHz"))
-    elif selection == "mix":
-        sequence.append(_preset_to_range(TINYSA_PRESETS["Normal"], "FPV Mix - 2.442 GHz"))
-        sequence.append(_preset_to_range(TINYSA_PRESETS["Alt"], "FPV Mix - 5.8 GHz"))
+    elif selection == "preset5gdet":
+        # Modo dedicado 5 GHz con calibración de baseline previa.
+        sequence.append({
+            "start": 5809500000,
+            "stop": 5849500000,
+            "points": TINYSA_QUICK_POINTS,
+            "sweeps": TINYSA_QUICK_SWEEPS,
+            "label": "FPV 5 GHz modo deteccion",
+            "rf_mode": "5g_detection",
+        })
     elif selection == "custom" and custom_data:
         start_mhz, stop_mhz = custom_data
         start_hz = int(start_mhz * 1e6)
@@ -984,6 +1050,7 @@ def build_tinysa_sequence(selection, custom_data=None, advanced_ranges=None):
             "points": TINYSA_POINTS,
             "sweeps": TIN_YSA_SWEEPS_PER_RANGE,
             "label": f"Custom {start_mhz:.3f}-{stop_mhz:.3f} MHz",
+            "rf_mode": "5g_detection",
         })
     elif selection == "advanced" and advanced_ranges:
         # Guardar la última configuración para reutilizarla
@@ -998,6 +1065,7 @@ def build_tinysa_sequence(selection, custom_data=None, advanced_ranges=None):
                 "points": TINYSA_POINTS,
                 "sweeps": max(1, int(sweeps_val)),
                 "label": f"Avanzado #{idx}: {start_mhz:.3f}-{stop_mhz:.3f} MHz",
+                "rf_mode": "5g_detection",
             })
 
     return sequence
@@ -1128,6 +1196,141 @@ def tinysa_hardware_worker():
 def detect_drone_rf(freqs, levels):
     """Wrapper local de detección RF (implementación en rf_detection.py)."""
     global rf_drone_detection_history
+    global rf_flat_baseline_loading, rf_flat_baseline_ready, rf_flat_baseline_levels
+    global rf_flat_baselines_by_label, rf_flat_prev_levels_by_label, rf_flat_detection_history_by_label
+    global rf_flat_loading_label, rf_flat_baseline_start_time, rf_flat_baseline_target_sweeps
+
+    def _clamp01(value):
+        return max(0.0, min(1.0, value))
+
+    if rf_5g_detection_mode:
+        levels = np.asarray(levels, dtype=np.float32)
+        if levels.size < 10:
+            return {"is_drone": False, "confidence": 0.0, "frequency": None}
+
+        active_label = (tinysa_current_label or "").strip()
+        if not active_label:
+            try:
+                if 0 <= tinysa_sequence_index < len(tinysa_sequence):
+                    active_label = str(tinysa_sequence[tinysa_sequence_index].get("label", "")).strip()
+            except Exception:
+                active_label = ""
+        if not active_label:
+            active_label = "rf_default"
+
+        baseline_entry = rf_flat_baselines_by_label.get(active_label)
+
+        if rf_flat_baseline_loading and rf_flat_loading_label != active_label:
+            rf_flat_baseline_levels = []
+            rf_flat_loading_label = active_label
+            rf_flat_baseline_start_time = time.time()
+
+        if rf_flat_baseline_loading and rf_flat_loading_label == active_label:
+            now_time = time.time()
+            target_sweeps = int(max(3, rf_flat_baseline_target_sweeps))
+            max_seconds = RF_FLAT_BASELINE_MAX_SECONDS
+            if rf_flat_baseline_start_time is None:
+                rf_flat_baseline_start_time = now_time
+
+            if not rf_flat_baseline_levels:
+                rf_flat_baseline_levels.append(levels.copy())
+            else:
+                expected_len = rf_flat_baseline_levels[0].shape[0]
+                if levels.shape[0] == expected_len:
+                    rf_flat_baseline_levels.append(levels.copy())
+                else:
+                    # Ignorar barridos de tamaño inconsistente para no romper la calibración.
+                    return {"is_drone": False, "confidence": 0.0, "frequency": None}
+
+            elapsed = now_time - rf_flat_baseline_start_time
+            enough_samples = len(rf_flat_baseline_levels) >= target_sweeps
+            timed_out = elapsed >= max_seconds and len(rf_flat_baseline_levels) >= 3
+
+            if enough_samples or timed_out:
+                try:
+                    baseline_samples = rf_flat_baseline_levels[:target_sweeps]
+                    baseline_stack = np.stack(baseline_samples, axis=0)
+                    baseline_mean = np.mean(baseline_stack, axis=0)
+                    baseline_std = np.std(baseline_stack, axis=0)
+                    baseline_std = np.maximum(baseline_std, 1.0)
+                    rf_flat_baselines_by_label[active_label] = {
+                        "mean": baseline_mean,
+                        "std": baseline_std,
+                    }
+                    rf_flat_baseline_loading = False
+                    rf_flat_baseline_ready = True
+                    rf_flat_detection_history_by_label[active_label] = []
+                    rf_flat_prev_levels_by_label[active_label] = None
+                    rf_flat_baseline_start_time = None
+                    print("[RF 5G] Baseline completada, detección activa.")
+                except Exception as e:
+                    print(f"[RF 5G] Error calibrando baseline: {e}")
+                    rf_flat_baseline_levels = []
+                    rf_flat_baseline_loading = True
+                    rf_flat_baseline_ready = False
+                    rf_flat_baseline_start_time = now_time
+            return {"is_drone": False, "confidence": 0.0, "frequency": None}
+
+        if baseline_entry is None:
+            rf_flat_baseline_levels = [levels.copy()]
+            rf_flat_baseline_loading = True
+            rf_flat_baseline_ready = False
+            rf_flat_baseline_start_time = time.time()
+            rf_flat_loading_label = active_label
+            return {"is_drone": False, "confidence": 0.0, "frequency": None}
+
+        baseline_mean = baseline_entry["mean"]
+        baseline_std = baseline_entry["std"]
+        if levels.shape != baseline_mean.shape:
+            # Si cambió el número de puntos para ese intervalo, recalibrar ese intervalo.
+            rf_flat_baselines_by_label.pop(active_label, None)
+            rf_flat_baseline_levels = [levels.copy()]
+            rf_flat_baseline_loading = True
+            rf_flat_baseline_ready = False
+            rf_flat_baseline_start_time = time.time()
+            rf_flat_loading_label = active_label
+            return {"is_drone": False, "confidence": 0.0, "frequency": None}
+
+        delta = levels - baseline_mean
+        z = delta / baseline_std
+        delta_p90 = float(np.percentile(delta, 90))
+        z_p95 = float(np.percentile(z, 95))
+        occupancy = float(np.mean(z > 1.3))
+        temporal_var = 0.0
+        prev_levels = rf_flat_prev_levels_by_label.get(active_label)
+        if prev_levels is not None and prev_levels.shape == levels.shape:
+            temporal_var = float(np.std(levels - prev_levels))
+        rf_flat_prev_levels_by_label[active_label] = levels.copy()
+
+        score = (
+            _clamp01((delta_p90 - 0.6) / 5.0) * 0.35
+            + _clamp01((z_p95 - 1.1) / 2.5) * 0.30
+            + _clamp01((occupancy - 0.06) / 0.25) * 0.20
+            + _clamp01((temporal_var - 1.0) / 7.0) * 0.15
+        )
+
+        peak_idx = int(np.argmax(delta))
+        peak_freq = float(freqs[peak_idx]) if len(freqs) > peak_idx else None
+
+        now = time.time()
+        history = rf_flat_detection_history_by_label.get(active_label, [])
+        history.append((now, score, peak_freq))
+        history = [
+            (ts, sc, fr)
+            for ts, sc, fr in history
+            if now - ts < 4.0
+        ]
+        rf_flat_detection_history_by_label[active_label] = history
+
+        recent_scores = [sc for _, sc, _ in history]
+        avg_score = float(np.mean(recent_scores)) if recent_scores else 0.0
+        strong_hits = sum(1 for sc in recent_scores if sc > 0.60)
+
+        confidence = min(1.0, max(score, avg_score))
+        is_detected = confidence >= 0.60 and (score >= 0.60 or (len(recent_scores) >= 3 and strong_hits >= 2))
+        if is_detected:
+            return {"is_drone": True, "confidence": confidence, "frequency": peak_freq}
+        return {"is_drone": False, "confidence": confidence * 0.5, "frequency": None}
 
     with rf_detection_params_lock:
         peak_threshold = rf_peak_threshold
@@ -1191,7 +1394,7 @@ def tinysa_render_worker():
     ax.set_xlim(freqs_init[0] / 1e6, freqs_init[-1] / 1e6)
     ax.set_ylim(-125, -10)
 
-    modo = "2.4 GHz" if freqs_init[0] < 3e9 else "5.8 GHz"
+    modo = "2.4 GHz" if freqs_init[0] < 3e9 else "5 GHz"
     ax.set_title(
         f"TinySA Ultra - {modo}", color="#00FF00", fontsize=9, fontweight="bold"
     )
@@ -1280,6 +1483,10 @@ def start_tinysa_with_sequence(sequence):
     global tinysa_sequence, tinysa_sequence_index, tinysa_current_label
     global tinysa_detected, tinysa_http_response, tinysa_use_http
     global tinysa_last_sequence_payload
+    global rf_5g_detection_mode, rf_flat_baseline_loading, rf_flat_baseline_ready
+    global rf_flat_baseline_levels, rf_flat_baselines_by_label, rf_flat_prev_levels_by_label
+    global rf_flat_detection_history_by_label, rf_flat_loading_label, rf_flat_baseline_start_time
+    global rf_flat_baseline_target_sweeps
     
     if not sequence:
         print("No hay secuencia configurada para TinySA.")
@@ -1289,6 +1496,16 @@ def start_tinysa_with_sequence(sequence):
     tinysa_sequence_index = 0
     current_tinysa_config = tinysa_sequence[0]
     tinysa_current_label = current_tinysa_config.get("label", "")
+    rf_5g_detection_mode = any(cfg.get("rf_mode") == "5g_detection" for cfg in tinysa_sequence)
+    rf_flat_baseline_loading = rf_5g_detection_mode
+    rf_flat_baseline_ready = False
+    rf_flat_baseline_levels = []
+    rf_flat_baselines_by_label = {}
+    rf_flat_prev_levels_by_label = {}
+    rf_flat_detection_history_by_label = {}
+    rf_flat_loading_label = tinysa_current_label if rf_5g_detection_mode else ""
+    rf_flat_baseline_start_time = time.time() if rf_5g_detection_mode else None
+    rf_flat_baseline_target_sweeps = RF_FLAT_BASELINE_TARGET_SWEEPS
     
     # Decidir modo: primero intentar serial directo, luego HTTP
     port = find_tinysa_port()
@@ -1307,6 +1524,9 @@ def start_tinysa_with_sequence(sequence):
 
                 tinysa_running = True
                 tinysa_use_http = False
+                if rf_5g_detection_mode:
+                    rf_flat_baseline_target_sweeps = RF_FLAT_BASELINE_TARGET_SWEEPS
+                    rf_flat_baseline_start_time = time.time()
 
                 with tinysa_data_lock:
                     tinysa_data_ready = None
@@ -1417,6 +1637,9 @@ def start_tinysa_with_sequence(sequence):
 
                 # Solo establecer tinysa_running = True después de verificar que está conectado
                 tinysa_running = True
+                if rf_5g_detection_mode:
+                    rf_flat_baseline_target_sweeps = RF_FLAT_BASELINE_TARGET_SWEEPS
+                    rf_flat_baseline_start_time = time.time()
 
                 with tinysa_data_lock:
                     tinysa_data_ready = None
@@ -1456,6 +1679,10 @@ def toggle_tinysa():
     global tinysa_thread, tinysa_render_thread, tinysa_data_ready, tinysa_image_ready
     global tinysa_sequence_index, tinysa_current_label
     global tinysa_detected, tinysa_http_response, tinysa_use_http
+    global rf_5g_detection_mode, rf_flat_baseline_loading, rf_flat_baseline_ready
+    global rf_flat_baseline_levels, rf_flat_baselines_by_label, rf_flat_prev_levels_by_label
+    global rf_flat_detection_history_by_label, rf_flat_loading_label, rf_flat_baseline_start_time
+    global rf_flat_baseline_target_sweeps
 
     if tinysa_running:
         # Apagar
@@ -1490,6 +1717,16 @@ def toggle_tinysa():
         tinysa_sequence_index = 0
         tinysa_current_label = ""
         tinysa_use_http = False
+        rf_5g_detection_mode = False
+        rf_flat_baseline_loading = False
+        rf_flat_baseline_ready = False
+        rf_flat_baseline_levels = []
+        rf_flat_baselines_by_label = {}
+        rf_flat_prev_levels_by_label = {}
+        rf_flat_detection_history_by_label = {}
+        rf_flat_loading_label = ""
+        rf_flat_baseline_start_time = None
+        rf_flat_baseline_target_sweeps = RF_FLAT_BASELINE_TARGET_SWEEPS
         print("TinySA Desactivado")
         return
 
@@ -1719,6 +1956,17 @@ def overlay_tinysa_graph(frame):
             cv2.LINE_AA,
         )
 
+        if rf_5g_detection_mode and rf_flat_baseline_loading:
+            target = int(max(3, rf_flat_baseline_target_sweeps))
+            progress = min(len(rf_flat_baseline_levels), target)
+            status_text = t("rf_flat_loading_message")
+            progress_text = t("rf_flat_loading_progress", progress, target)
+            if rf_flat_loading_label:
+                status_text = f"{status_text} [{rf_flat_loading_label}]"
+            cv2.rectangle(graph, (6, 32), (panel_w - 6, 58), (0, 0, 0), -1)
+            cv2.putText(graph, status_text, (10, 44), font, 0.30, (0, 255, 255), 1, cv2.LINE_AA)
+            cv2.putText(graph, progress_text, (10, 56), font, 0.30, (255, 255, 255), 1, cv2.LINE_AA)
+
         # 8. Dibujar la traza en amarillo
         cv2.polylines(graph, [pts], isClosed=False, color=(0, 255, 255), thickness=2)
 
@@ -1798,6 +2046,11 @@ def audio_detection_worker():
             confidence=confidence,
             audio_path=audio_path,
         )
+        enqueue_client_detection_event(
+            "tensorflow",
+            timestamp=timestamp,
+            confidence=confidence,
+        )
 
     run_audio_detection_worker(
         is_detection_enabled_fn=_is_enabled,
@@ -1845,7 +2098,7 @@ def toggle_audio_detection():
 # --- CONFIGURACIÓN YOLO CON THREADING ---
 yolo_model = None
 yolo_enabled = False
-CONFIDENCE_THRESHOLD = 0.5
+CONFIDENCE_THRESHOLD = 0.7
 IOU_THRESHOLD = 0.45
 YOLO_SCALE = 0.5  # Procesar al 50% de resolución
 
@@ -2305,6 +2558,94 @@ def draw_ip_settings_icon(frame, mouse_pos, click_pos):
     )
 
 
+def draw_ip_selector_button(frame, mouse_pos, click_pos):
+    """Wrapper del selector de IP (implementación en ui_indicators.py)."""
+    return draw_ip_selector_button_ui(
+        frame=frame,
+        mouse_pos=mouse_pos,
+        click_pos=click_pos,
+        icon=get_yolo_settings_icon(),
+        ip_text=f"IP: {ip_y_puerto}",
+    )
+
+
+def _build_ip_selector_options():
+    return lan_discovery_manager.build_ip_selector_options(
+        current_ip_with_port=ip_y_puerto,
+        t_func=t,
+        get_tailscale_ip_fn=get_tailscale_ip,
+        get_tailscale_devices_fn=get_tailscale_connected_devices,
+    )
+
+
+def _show_ip_selector_dialog(options):
+    root = Tk()
+    root.title(t("ip_selector_title"))
+    root.attributes("-topmost", True)
+    root.resizable(False, False)
+
+    frame = tk.Frame(root, padx=12, pady=12)
+    frame.pack(fill="both", expand=True)
+
+    tk.Label(frame, text=t("ip_selector_prompt"), font=("Arial", 10, "bold")).pack(anchor="w", pady=(0, 8))
+
+    listbox = tk.Listbox(frame, width=58, height=min(10, max(4, len(options))))
+    listbox.pack(fill="both", expand=True)
+    for idx, opt in enumerate(options):
+        listbox.insert("end", opt["label"])
+        if opt["value"] == ip_y_puerto:
+            listbox.selection_set(idx)
+            listbox.activate(idx)
+
+    selected = {"value": None}
+
+    def on_ok():
+        selection = listbox.curselection()
+        if not selection:
+            messagebox.showinfo(t("ip_selector_title"), t("ip_selector_no_selection"))
+            return
+        selected["value"] = options[selection[0]]["value"]
+        root.destroy()
+
+    def on_cancel():
+        root.destroy()
+
+    btns = tk.Frame(frame)
+    btns.pack(fill="x", pady=(10, 0))
+    tk.Button(btns, text=t("ok"), command=on_ok, width=12).pack(side="left", padx=4)
+    tk.Button(btns, text=t("cancel"), command=on_cancel, width=12).pack(side="left", padx=4)
+
+    root.mainloop()
+    return selected["value"]
+
+
+def open_ip_selector_dialog():
+    """Abre selector de IP candidatas (Tailscale/LAN) en hilo aparte."""
+    global ip_selector_thread
+    if ip_selector_thread and ip_selector_thread.is_alive():
+        return
+
+    def runner():
+        global ip_selector_thread, pending_ip_change
+        try:
+            options = _build_ip_selector_options()
+            if len(options) <= 1:
+                root = Tk()
+                root.withdraw()
+                root.attributes("-topmost", True)
+                messagebox.showinfo(t("ip_selector_title"), t("ip_selector_no_candidates"))
+                root.destroy()
+                return
+            selected_ip = _show_ip_selector_dialog(options)
+            if selected_ip and selected_ip != ip_y_puerto:
+                pending_ip_change = selected_ip
+        finally:
+            ip_selector_thread = None
+
+    ip_selector_thread = threading.Thread(target=runner, daemon=True)
+    ip_selector_thread.start()
+
+
 def open_ip_change_dialog():
     global ip_dialog_thread
     def _get_current_ip():
@@ -2602,6 +2943,8 @@ print("  Y - YOLO ON/OFF")
 print("  R - Sliders RF ON/OFF")
 print("  T - TinySA (RF) ON/OFF")
 print("  I - Cambiar IP")
+lan_discovery_manager.start()
+start_client_event_worker()
 
 cv2.namedWindow(window_name, cv2.WINDOW_NORMAL | cv2.WINDOW_GUI_NORMAL)
 DEFAULT_WINDOW_SIZE = (1280, 720)
@@ -2672,8 +3015,12 @@ while not stop_program:
         frame_negro, _ = draw_ip_indicator(frame_negro, current_mouse, current_click)
         frame_negro = draw_adb_message(frame_negro, t, adb_connected)
         frame_negro, ip_settings_clicked = draw_ip_settings_icon(frame_negro, current_mouse, current_click)
+        frame_negro, ip_selector_clicked = draw_ip_selector_button(frame_negro, current_mouse, current_click)
         if ip_settings_clicked:
             open_ip_change_dialog()
+            current_click = None
+        elif ip_selector_clicked:
+            open_ip_selector_dialog()
             current_click = None
              
         frame_negro, tinysa_clicked = draw_tinysa_indicator(frame_negro, current_mouse, current_click)
@@ -2744,6 +3091,29 @@ while not stop_program:
             rf_drone_detection_result,
             rf_drone_detection_enabled,
         )
+
+        # En modo sin video, mantener también el envío de alertas RF por Telegram.
+        with rf_drone_detection_lock:
+            rf_snapshot = rf_drone_detection_result.copy()
+        rf_detected = bool(rf_snapshot.get("is_drone", False)) and rf_drone_detection_enabled
+        if rf_detected and not rf_prev_detected:
+            rf_photo_path = None
+            if telegram_config.get("send_rf_image", True):
+                rf_photo_path = _save_rf_image_for_telegram()
+            enqueue_telegram_notification(
+                "rf",
+                timestamp=time.time(),
+                confidence=rf_snapshot.get("confidence", 0.0),
+                frequency_hz=rf_snapshot.get("frequency"),
+                frame_path=rf_photo_path,
+            )
+            enqueue_client_detection_event(
+                "rf",
+                timestamp=time.time(),
+                confidence=rf_snapshot.get("confidence", 0.0),
+                frequency_hz=rf_snapshot.get("frequency"),
+            )
+        rf_prev_detected = rf_detected
         
         if tuple(current_window_size) != DEFAULT_WINDOW_SIZE:
             cv2.resizeWindow(window_name, *DEFAULT_WINDOW_SIZE)
@@ -2891,8 +3261,12 @@ while not stop_program:
         frame, _ = draw_ip_indicator(frame, current_mouse, current_click)
         frame = draw_adb_message(frame, t, adb_connected)
         frame, ip_settings_clicked = draw_ip_settings_icon(frame, current_mouse, current_click)
+        frame, ip_selector_clicked = draw_ip_selector_button(frame, current_mouse, current_click)
         if ip_settings_clicked:
             open_ip_change_dialog()
+            current_click = None
+        elif ip_selector_clicked:
+            open_ip_selector_dialog()
             current_click = None
 
         process_pending_yolo_reload()
@@ -2912,14 +3286,20 @@ while not stop_program:
 
         if yolo_detected and not yolo_prev_detected:
             best_confidence = max((box.get("conf", 0.0) for box in resultado_yolo["boxes_data"]), default=0.0)
+            now_ts = time.time()
             yolo_photo_path = None
             if telegram_config.get("send_yolo_photo", True):
                 yolo_photo_path = _save_frame_for_telegram(frame, "yolo")
             enqueue_telegram_notification(
                 "yolo",
-                timestamp=time.time(),
+                timestamp=now_ts,
                 confidence=best_confidence,
                 frame_path=yolo_photo_path,
+            )
+            enqueue_client_detection_event(
+                "yolo",
+                timestamp=now_ts,
+                confidence=best_confidence,
             )
         yolo_prev_detected = yolo_detected
 
@@ -2930,12 +3310,19 @@ while not stop_program:
             rf_photo_path = None
             if telegram_config.get("send_rf_image", True):
                 rf_photo_path = _save_rf_image_for_telegram()
+            now_ts = time.time()
             enqueue_telegram_notification(
                 "rf",
-                timestamp=time.time(),
+                timestamp=now_ts,
                 confidence=rf_snapshot.get("confidence", 0.0),
                 frequency_hz=rf_snapshot.get("frequency"),
                 frame_path=rf_photo_path,
+            )
+            enqueue_client_detection_event(
+                "rf",
+                timestamp=now_ts,
+                confidence=rf_snapshot.get("confidence", 0.0),
+                frequency_hz=rf_snapshot.get("frequency"),
             )
         rf_prev_detected = rf_detected
         
@@ -2994,6 +3381,8 @@ if cap is not None:
 
 if p is not None:
     p.terminate()
+stop_client_event_worker()
+lan_discovery_manager.stop()
 telegram_notifier.stop()
 cv2.destroyAllWindows()
 print("Programa finalizado.")

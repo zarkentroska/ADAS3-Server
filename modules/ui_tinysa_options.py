@@ -137,10 +137,7 @@ def show_tinysa_menu(
     ttk.Radiobutton(options_frame, text=t_func("fpv_normal"), variable=selection_var, value="preset1").pack(
         anchor="w", pady=2
     )
-    ttk.Radiobutton(options_frame, text=t_func("fpv_alt"), variable=selection_var, value="preset2").pack(
-        anchor="w", pady=2
-    )
-    ttk.Radiobutton(options_frame, text=t_func("fpv_mix"), variable=selection_var, value="mix").pack(
+    ttk.Radiobutton(options_frame, text=t_func("fpv_5g_detection_mode"), variable=selection_var, value="preset5gdet").pack(
         anchor="w", pady=2
     )
     ttk.Radiobutton(options_frame, text=t_func("custom_range"), variable=selection_var, value="custom").pack(
