@@ -1,37 +1,15 @@
 # -*- mode: python ; coding: utf-8 -*-
 """
 Especificación personalizada de PyInstaller para empaquetar testcam.py
-incluyendo todos los recursos y modelos necesarios.
-
-Uso:
-    pyinstaller --noconfirm pyinstaller.spec
 """
 
 import os
-from PyInstaller.utils.hooks import collect_data_files, collect_submodules, copy_metadata
+import glob
+from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
-# Recopilar todos los submódulos de torch para asegurar inclusión completa (especialmente en Windows)
-torch_submodules = []
-try:
-    torch_submodules = collect_submodules('torch', recursive=True)
-    print(f"[BUILD] Recopilados {len(torch_submodules)} submódulos de torch")
-except Exception as e:
-    print(f"[BUILD] Advertencia al recopilar submódulos de torch: {e}")
-    # Fallback: lista manual de módulos críticos
-    torch_submodules = [
-        'torch.distributed',
-        'torch.distributed.*',
-        'torch.utils.data',
-        'torch.utils.data.*',
-        'torch.utils._python_dispatch',
-    ]
-
-# __file__ no está definido cuando PyInstaller ejecuta el spec mediante exec(),
-# así que usamos el directorio actual desde el que se invoca el comando.
 BASE_DIR = os.path.abspath(os.getcwd())
 ICON_PATH = os.path.join(BASE_DIR, "adas3.ico")
 
-# Verificar que el icono existe, si no, usar None
 if not os.path.exists(ICON_PATH):
     print(f"Advertencia: No se encontró {ICON_PATH}")
     ICON_PATH = None
@@ -39,38 +17,57 @@ else:
     ICON_PATH = os.path.normpath(os.path.abspath(ICON_PATH))
     if os.name == 'nt':
         ICON_PATH = ICON_PATH.replace('\\', '/')
-    print(f"Usando icono: {ICON_PATH}")
+
+# --- 1. INCLUSIÓN DE TUS MÓDULOS AUTOMÁTICAMENTE ---
+modules_path = os.path.join(BASE_DIR, "modules", "*.py")
+custom_modules = []
+for file in glob.glob(modules_path):
+    module_name = os.path.basename(file).replace(".py", "")
+    if module_name != "__init__":
+        custom_modules.append(f"modules.{module_name}")
+print(f"[BUILD] Detectados {len(custom_modules)} módulos personalizados en la carpeta modules/")
+
+torch_submodules = []
+try:
+    torch_submodules = collect_submodules('torch', recursive=True)
+except Exception as e:
+    torch_submodules = ['torch.distributed', 'torch.utils.data', 'torch.utils._python_dispatch']
+
+# --- 2. RECOPILACIÓN DE LIBRERÍAS REBELDES (TF, Keras, SciPy, Librosa) ---
+try:
+    keras_subs = collect_submodules('keras', recursive=True)
+    tf_subs = collect_submodules('tensorflow', recursive=True)
+    scipy_subs = collect_submodules('scipy', recursive=True)
+    librosa_subs = collect_submodules('librosa', recursive=True)
+    
+    # Librosa y Scipy necesitan sus propios archivos de datos (modelos internos, configs)
+    librosa_datas = collect_data_files('librosa')
+    scipy_datas = collect_data_files('scipy')
+    
+    print("[BUILD] Recopilados submódulos y datos de TF, Keras, SciPy y Librosa con éxito.")
+except Exception as e:
+    print(f"[BUILD] Advertencia al recopilar librerías complejas: {e}")
+    keras_subs, tf_subs, scipy_subs, librosa_subs = [], [], [], []
+    librosa_datas, scipy_datas = [], []
 
 RESOURCE_FILES = [
     "models/best.pt",
-    "models/drone_audio_model.h5",  # Solo .h5 se usa en el código (tf.keras.models.load_model)
-    # "drone_audio_model.tflite" - NO se usa en el código, eliminado
+    "models/drone_audio_model.h5",
     "models/audio_mean.npy",
     "models/audio_std.npy",
-    # NOTA: Los archivos JSON de configuración NO se incluyen aquí porque
-    # ahora se guardan en un directorio persistente del usuario (CONFIG_DIR)
-    # - language_config.json -> ~/.config/adas3/ (Linux) o %APPDATA%/ADAS3/ (Windows)
-    # - config_camara.json -> ~/.config/adas3/ (Linux) o %APPDATA%/ADAS3/ (Windows)
-    # - yolo_models_config.json -> ~/.config/adas3/ (Linux) o %APPDATA%/ADAS3/ (Windows)
-    # - tinysa_advanced_intervals.json -> ~/.config/adas3/ (Linux) o %APPDATA%/ADAS3/ (Windows)
-    # - tailscale_config.json -> NO se guarda (riesgo de seguridad)
     "models/__best.pt",
-    # Archivos de Tailscale
     "installers/tailscale-setup.exe",
     "installers/tailscale-installer.sh",
-    # Iconos UI
     "assets/icons/vol.png",
     "assets/icons/mute.png",
-    # settings.png se incluye después para evitar conflictos con el icono
     "assets/icons/settings.png",
-    # Logo de GitHub para la UI
     "assets/icons/ghlogo.png",
 ]
 
 datas = []
-# Incluir adas3.ico para icono de ventana/barra de tareas en runtime
 if os.path.exists(os.path.join(BASE_DIR, "adas3.ico")):
     datas.append((os.path.join(BASE_DIR, "adas3.ico"), "."))
+
 for resource in RESOURCE_FILES:
     src = os.path.join(BASE_DIR, resource)
     if os.path.exists(src):
@@ -83,132 +80,38 @@ for resource in RESOURCE_FILES:
         else:
             datas.append((src, "."))
 
-# No recoger datos automáticamente - PyInstaller detectará automáticamente
-# los archivos necesarios mediante análisis estático del código
-# Esto evita problemas con archivos grandes o demasiados archivos
-
-# Incluir datos necesarios de matplotlib (mpl-data) para evitar errores de fuentes/estilos
 try:
-    mpl_datas = collect_data_files('matplotlib', includes=['mpl-data/**'])
-    datas += mpl_datas
-except Exception as e:
-    print(f"Advertencia: no se pudieron recopilar datos de matplotlib: {e}")
+    datas += collect_data_files('matplotlib', includes=['mpl-data/**'])
+except:
+    pass
 
-# Construir lista de hiddenimports
+# --- 3. AÑADIMOS LOS DATOS RECOPILADOS DE LAS LIBRERÍAS REBELDES ---
+datas.extend(librosa_datas)
+datas.extend(scipy_datas)
+
 hiddenimports = [
-    "matplotlib",
-    "matplotlib.backends.backend_agg",
-    "cv2",
-    "ultralytics",
-    "ultralytics.models",
-    "ultralytics.utils",
-    "librosa",
-    "soundfile",
-    "numba",
-    "tensorflow",
-    "pyaudio",
-    "serial",
-    "serial.tools.list_ports",
+    "matplotlib", "matplotlib.backends.backend_agg", "cv2", "ultralytics",
+    "ultralytics.models", "ultralytics.utils", "soundfile",
+    "numba", "pyaudio", "serial", "serial.tools.list_ports",
 ]
 
-# Agregar todos los submódulos de torch (ya recopilados arriba)
+# --- 4. AÑADIMOS LOS SUBMÓDULOS RECOPILADOS ---
 hiddenimports.extend(torch_submodules)
-print(f"[BUILD] Total de hiddenimports: {len(hiddenimports)} (incluyendo {len(torch_submodules)} de torch)")
+hiddenimports.extend(custom_modules)
+hiddenimports.extend(keras_subs)
+hiddenimports.extend(tf_subs)
+hiddenimports.extend(scipy_subs)
+hiddenimports.extend(librosa_subs)
 
-# Excluir módulos innecesarios
-# En Windows: NO excluir nada (mantener todo para máxima compatibilidad)
-# En Linux: excluir módulos no usados para reducir tamaño (CPU-only)
-if os.name == 'nt':  # Windows - NO excluir nada
-    excludes = [
-        # Solo herramientas de desarrollo opcionales que no afectan funcionalidad
-        "pytest",
-        "sphinx",
-        "pydoc",
-    ]
-else:  # Linux - excluir módulos no usados
-    excludes = [
-        # Triton - compilador JIT de PyTorch, no necesario en runtime
-        "triton",
-        # Polars - no se usa
-        "polars",
-        "_polars_runtime_32",
-        # Módulos de desarrollo y testing
-        "pytest",
-        "doctest",
-        "test",
-        "tests",
-        # Jupyter/IPython
-        "IPython",
-        "jupyter",
-        "notebook",
-        # Documentación
-        "sphinx",
-        "pydoc",
-        # Herramientas de desarrollo
-        "setuptools",
-        "wheel",
-        # scipy - excluir módulos grandes no usados
-        "scipy.sparse.csgraph",
-        "scipy.spatial",
-        "scipy.optimize",
-        "scipy.integrate",
-        "scipy.special",
-        "scipy.stats",
-        "scipy.ndimage",
-        "scipy.signal",
-        "scipy.io",
-        # sklearn - no se usa en el código
-        "sklearn",
-        "sklearn.*",
-        # matplotlib - excluir backends no usados (solo se usa 'Agg')
-        "matplotlib.backends.backend_gtk3agg",
-        "matplotlib.backends.backend_gtk3cairo",
-        "matplotlib.backends.backend_gtk4agg",
-        "matplotlib.backends.backend_gtk4cairo",
-        "matplotlib.backends.backend_qt5agg",
-        "matplotlib.backends.backend_qt5cairo",
-        "matplotlib.backends.backend_tkagg",
-        "matplotlib.backends.backend_webagg",
-        "matplotlib.backends._backend_pdf_ps",
-        "matplotlib.backends._backend_svg",
-        # TensorFlow - excluir solo herramientas de desarrollo
-        "tensorflow.python.tools",
-        "tensorflow.python.debug",
-        # PyTorch - excluir solo módulos de desarrollo
-        "torch.testing",
-        "torch.utils.tensorboard",
-        "torch.utils.bottleneck",
-        # OpenCV - excluir módulos no usados
-        "cv2.qt",
-        # CUDA/NVIDIA - excluir todas las librerías CUDA (CPU-only en Linux)
-        "nvidia",
-        "nvidia.cublas",
-        "nvidia.cuda_cupti",
-        "nvidia.cuda_nvcc",
-        "nvidia.cuda_nvrtc",
-        "nvidia.cuda_runtime",
-        "nvidia.cudnn",
-        "nvidia.cufft",
-        "nvidia.curand",
-        "nvidia.cusolver",
-        "nvidia.cusparse",
-        "nvidia.nccl",
-        "nvidia.nvjitlink",
-        "nvidia.nvtx",
-        "nvidia.nvshmem",
-        "nvidia.cufile",
-    ]
-
-binaries = []
-
-block_cipher = None
-
-# Los submódulos de torch ya se agregaron a hiddenimports arriba
+if os.name == 'nt':
+    excludes = []
+else:
+    excludes = ["triton", "polars", "_polars_runtime_32", "pytest", "IPython", "jupyter", "sklearn", "nvidia"]
 
 a = Analysis(
     ["testcam.py"],
     pathex=[BASE_DIR],
-    binaries=binaries,
+    binaries=[],
     datas=datas,
     hiddenimports=hiddenimports,
     hookspath=[],
@@ -217,93 +120,47 @@ a = Analysis(
     excludes=excludes,
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
-    cipher=block_cipher,
+    cipher=None,
     noarchive=False,
 )
 
-# Filtrar librerías CUDA solo en Linux (CPU-only)
-# En Windows: mantener todas las librerías CUDA (GPU completa)
-if os.name != 'nt':  # Solo en Linux
-    # Linux: CPU-only - mantener mínimas de PyTorch, excluir pesadas del sistema
-    filtered_binaries = []
-    for name, path, typ in a.binaries:
-        name_lower = name.lower()
-        path_lower = path.lower() if path else ""
-        
-        # Mantener librerías CUDA mínimas de PyTorch (necesarias para que no falle el import)
-        if 'libtorch_cuda' in name_lower or 'libc10_cuda' in name_lower:
-            # Incluir estas para que PyTorch pueda cargar
-            filtered_binaries.append((name, path, typ))
-            continue
-        
-        # Excluir librerías NVIDIA del sistema (pesadas y no necesarias para CPU)
-        if 'nvidia' in path_lower and '/nvidia/' in path_lower:
-            continue  # Excluir nvidia/cudnn, nvidia/cublas, etc.
-        if 'cudnn' in name_lower or ('cudnn' in path_lower and 'nvidia' in path_lower):
-            continue
-        if 'cublas' in name_lower or ('cublas' in path_lower and 'nvidia' in path_lower):
-            continue
-        if 'cufft' in name_lower and 'nvidia' in path_lower:
-            continue
-        if 'libcuda.so' in name_lower:  # Librería del sistema, no necesaria
-            continue
-        
-        # Incluir todo lo demás
-        filtered_binaries.append((name, path, typ))
-    
-    a.binaries = filtered_binaries
-# Windows: no filtrar, mantener todas las librerías CUDA (GPU completa)
-pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
+pyz = PYZ(a.pure, a.zipped_data, cipher=None)
 
-# En Linux, usar onedir en lugar de onefile para evitar problemas con archivos grandes
-# En Windows, se puede usar onefile
 if os.name == 'nt':
-    # Windows: onefile
+    # WINDOWS: Creamos un ejecutable pero EN MODO DIRECTORIO (ideal para el instalador)
     exe = EXE(
         pyz,
         a.scripts,
-        a.binaries,
-        a.zipfiles,
-        a.datas,
         [],
-        name="DetectorDrones",
+        exclude_binaries=True,
+        name="ADAS3",
         debug=False,
         bootloader_ignore_signals=False,
         strip=False,
         upx=False,
-        upx_exclude=[],
-        runtime_tmpdir=None,
-        console=False,
-        disable_windowed_traceback=False,
-        argv_emulation=False,
-        target_arch=None,
-        codesign_identity=None,
-        entitlements_file=None,
-        icon=ICON_PATH if ICON_PATH and os.path.exists(ICON_PATH) else None,
+        console=False, # <--- ¡CAMBIADO A TRUE PARA CAZAR ERRORES!
+        icon=ICON_PATH,
     )
-else:
-    # Linux: onefile CPU-only (sin GPU, más pequeño y comprimido)
-    exe = EXE(
-        pyz,
-        a.scripts,
+    # COLLECT agrupa todo en una carpeta en dist/ADAS3
+    coll = COLLECT(
+        exe,
         a.binaries,
         a.zipfiles,
         a.datas,
-        [],
-        name="DetectorDrones",
-        debug=False,
-        bootloader_ignore_signals=False,
-        strip=True,  # Stripping reduce el tamaño
-        upx=False,  # UPX puede causar problemas, deshabilitado
+        strip=False,
+        upx=False,
         upx_exclude=[],
-        runtime_tmpdir=None,
-        console=False,
-        disable_windowed_traceback=False,
-        argv_emulation=False,
-        target_arch=None,
-        codesign_identity=None,
-        entitlements_file=None,
-        icon=ICON_PATH if ICON_PATH and os.path.exists(ICON_PATH) else None,
+        name='ADAS3',
+    )
+else:
+    # LINUX 
+    exe = EXE(
+        pyz, a.scripts, a.binaries, a.zipfiles, a.datas, [],
+        name="ADAS3", debug=False, bootloader_ignore_signals=False,
+        strip=True, upx=False, upx_exclude=[], runtime_tmpdir=None,
+        console=True, # <--- ¡También cambiado aquí por precaución!
+        disable_windowed_traceback=False, argv_emulation=False,
+        target_arch=None, codesign_identity=None, entitlements_file=None,
+        icon=ICON_PATH,
     )
     coll = None
-
