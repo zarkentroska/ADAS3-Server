@@ -23,7 +23,7 @@ This application is part of a client-server architecture project that works toge
 </div>
 
 <div align="center">
-  <img src="https://raw.githubusercontent.com/zarkentroska/ADAS3-Server/main/assets/TGBOT.png" alt="ADAS3 Server Interface" width="800">
+  <img src="https://raw.githubusercontent.com/zarkentroska/ADAS3-Server/main/assets/TGBOT.png" alt="ADAS3 Server Interface" width="400">
   <p><em>NEW: Now with Telegram Bot notifications full integration</em></p>
 </div>
 
