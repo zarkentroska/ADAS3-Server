@@ -113,7 +113,16 @@ def get_telegram_temp_dir():
     return temp_dir
 
 
-def build_telegram_message(event_type, *, timestamp, confidence=None, frequency_hz=None, t_func):
+def build_telegram_message(
+    event_type,
+    *,
+    timestamp,
+    confidence=None,
+    frequency_hz=None,
+    t_func,
+    drone_size_class=None,
+    drone_size_confidence=None,
+):
     hour_text = time.strftime("%H:%M:%S", time.localtime(timestamp))
 
     if event_type == "yolo":
@@ -126,7 +135,13 @@ def build_telegram_message(event_type, *, timestamp, confidence=None, frequency_
             return t_func("telegram_rf_message_freq", hour_text, frequency_hz / 1e6, int((confidence or 0.0) * 100))
         return t_func("telegram_rf_message", hour_text, int((confidence or 0.0) * 100))
 
-    return t_func("telegram_audio_message", hour_text, int((confidence or 0.0) * 100))
+    base_msg = t_func("telegram_audio_message", hour_text, int((confidence or 0.0) * 100))
+    if drone_size_class and drone_size_class != "inconclusive" and (drone_size_confidence or 0.0) > 0.0:
+        size_label = t_func(f"drone_size_{drone_size_class}")
+        size_pct = int((drone_size_confidence or 0.0) * 100)
+        size_suffix = t_func("telegram_audio_size_suffix", size_label, size_pct)
+        return f"{base_msg} {size_suffix}"
+    return base_msg
 
 
 def save_frame_for_telegram(frame, event_type):

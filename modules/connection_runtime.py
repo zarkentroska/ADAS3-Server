@@ -1,6 +1,7 @@
 import json
 import os
-import threading
+
+from modules.mainthread_dispatch import IS_MACOS, schedule_dialog
 
 
 def cargar_ip(config_file, default_ip="192.168.1.129:8080"):
@@ -90,19 +91,25 @@ def open_ip_change_dialog(
     set_pending_ip_fn,
     clear_thread_fn,
 ):
-    """Abre diálogo de cambio de IP en hilo separado."""
-    if current_thread and current_thread.is_alive():
+    """Abre diálogo de cambio de IP.
+
+    En Windows/Linux se ejecuta en un hilo aparte (comportamiento histórico).
+    En macOS se encola para ejecutarse en el hilo principal porque ``tkinter``
+    no es thread-safe en Cocoa (crearlo en un hilo secundario provoca
+    ``SIGTRAP``).
+    """
+    if current_thread and not IS_MACOS and current_thread.is_alive():
         return current_thread
 
     def runner():
-        nueva_ip = ask_new_ip_fn(get_current_ip_fn())
-        if nueva_ip and nueva_ip.strip():
-            set_pending_ip_fn(nueva_ip.strip())
-        clear_thread_fn()
+        try:
+            nueva_ip = ask_new_ip_fn(get_current_ip_fn())
+            if nueva_ip and nueva_ip.strip():
+                set_pending_ip_fn(nueva_ip.strip())
+        finally:
+            clear_thread_fn()
 
-    thread = threading.Thread(target=runner, daemon=True)
-    thread.start()
-    return thread
+    return schedule_dialog(runner)
 
 
 def apply_pending_ip_change(*, pending_ip, cap_actual, cambiar_ip_fn):

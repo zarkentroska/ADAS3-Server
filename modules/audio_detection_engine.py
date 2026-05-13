@@ -87,14 +87,58 @@ def run_audio_detection_worker(
     set_alert_state_fn,
     set_detection_result_fn,
     on_detection_event_fn=None,
+    classify_size_fn=None,
 ):
-    """Loop del worker de detección de audio con dependencias inyectadas."""
+    """Loop del worker de detección de audio con dependencias inyectadas.
+
+    ``classify_size_fn`` (opcional) es una callable ``(audio_bytes) ->
+    (size_class: str, size_confidence: float)`` que se invoca cuando la
+    predicción supera el umbral. Devuelve la clasificación por firma sonora
+    (tamaño del dron). La clase persiste durante toda la ventana de alerta
+    y se propaga a ``set_detection_result_fn`` y al ``on_detection_event_fn``.
+
+    ``set_detection_result_fn`` debe aceptar kwargs ``size_class`` y
+    ``size_confidence`` (los ignora si no los usa, son opcionales).
+    ``get_alert_state_fn``/``set_alert_state_fn`` pueden operar con la tupla
+    ampliada ``(alert_time, max_confidence, size_class, size_confidence)`` o
+    con la clásica de 2 campos (compatibilidad hacia atrás).
+    """
     accumulated_audio = b""
     required_bytes = int(44100 * audio_duration_seconds * 2)
     first_prediction_shown = False
     noise_floor = 0.0
     consecutive_above_threshold = 0
     silence_gate_hits = 0
+
+    def _unpack_alert_state():
+        """Normaliza get_alert_state_fn a (alert_time, max_conf, size, size_conf)."""
+        state = get_alert_state_fn()
+        if state is None:
+            return None, 0.0, "", 0.0
+        if len(state) == 2:
+            alert_time, max_conf = state
+            return alert_time, max_conf, "", 0.0
+        alert_time, max_conf, size_class, size_conf = (
+            state[0], state[1], state[2] if len(state) > 2 else "",
+            state[3] if len(state) > 3 else 0.0,
+        )
+        return alert_time, max_conf, size_class or "", float(size_conf or 0.0)
+
+    def _pack_alert_state(alert_time, max_conf, size_class, size_conf):
+        try:
+            set_alert_state_fn(alert_time, max_conf, size_class, size_conf)
+        except TypeError:
+            set_alert_state_fn(alert_time, max_conf)
+
+    def _push_detection_result(is_drone, confidence, size_class, size_conf):
+        try:
+            set_detection_result_fn(
+                is_drone, confidence,
+                size_class=size_class,
+                size_confidence=size_conf,
+            )
+        except TypeError:
+            set_detection_result_fn(is_drone, confidence)
 
     print("[AUDIO] Worker iniciado")
 
@@ -112,7 +156,7 @@ def run_audio_detection_worker(
                             # Silencio/ruido muy bajo: sin inferencia para evitar falsos "raw".
                             consecutive_above_threshold = 0
                             current_time = time.time()
-                            alert_time, max_confidence = get_alert_state_fn()
+                            alert_time, max_confidence, size_class, size_confidence = _unpack_alert_state()
                             is_drone = False
                             if alert_time is not None:
                                 elapsed = current_time - alert_time
@@ -122,8 +166,10 @@ def run_audio_detection_worker(
                                 else:
                                     alert_time = None
                                     max_confidence = 0.0
-                            set_alert_state_fn(alert_time, max_confidence)
-                            set_detection_result_fn(is_drone, 0.0)
+                                    size_class = ""
+                                    size_confidence = 0.0
+                            _pack_alert_state(alert_time, max_confidence, size_class, size_confidence)
+                            _push_detection_result(is_drone, 0.0, size_class, size_confidence)
                             silence_gate_hits += 1
                             if silence_gate_hits == 1 or silence_gate_hits % 20 == 0:
                                 print(
@@ -144,7 +190,7 @@ def run_audio_detection_worker(
 
                         threshold = float(get_threshold_fn())
                         current_time = time.time()
-                        alert_time, max_confidence = get_alert_state_fn()
+                        alert_time, max_confidence, size_class, size_confidence = _unpack_alert_state()
 
                         # Actualizar suelo de ruido cuando estamos por debajo del umbral.
                         if prediction < threshold:
@@ -167,15 +213,36 @@ def run_audio_detection_worker(
                         else:
                             consecutive_above_threshold = 0
 
+                        # Clasificar la firma sonora cuando la predicción actual
+                        # dispara (aunque todavía no hayamos confirmado la alerta):
+                        # así aprovechamos la energía reciente que hizo subir el modelo.
+                        current_size_class = ""
+                        current_size_confidence = 0.0
+                        if classify_size_fn is not None and prediction >= threshold:
+                            try:
+                                classified = classify_size_fn(audio_window)
+                                if isinstance(classified, tuple) and len(classified) >= 2:
+                                    current_size_class = str(classified[0] or "")
+                                    current_size_confidence = float(classified[1] or 0.0)
+                            except Exception as size_err:
+                                print(f"[AUDIO] Clasificador de tamaño falló: {size_err}")
+
                         if consecutive_above_threshold >= _AUDIO_DETECTION_CONFIRM_WINDOWS:
                             if alert_time is None:
                                 alert_time = current_time
                                 max_confidence = effective_prediction
+                                size_class = current_size_class
+                                size_confidence = current_size_confidence
                                 alert_time_str = time.strftime("%H:%M:%S", time.localtime(current_time))
                                 visual_pct = min(100, int(visual_confidence * 100))
+                                size_tag = (
+                                    f" | Tamaño: {size_class} {int(size_confidence * 100)}%"
+                                    if size_class and size_class != "inconclusive"
+                                    else ""
+                                )
                                 print(
                                     f"[AUDIO] ⚠ DRON DETECTADO A LAS {alert_time_str} - "
-                                    f"{visual_pct}% (raw: {prediction*100:.1f}%)"
+                                    f"{visual_pct}% (raw: {prediction*100:.1f}%){size_tag}"
                                 )
                                 if on_detection_event_fn:
                                     try:
@@ -185,6 +252,8 @@ def run_audio_detection_worker(
                                                 "timestamp": current_time,
                                                 "visual_confidence": float(visual_confidence),
                                                 "raw_prediction": float(prediction),
+                                                "size_class": size_class,
+                                                "size_confidence": float(size_confidence),
                                             }
                                         )
                                     except Exception as callback_error:
@@ -192,13 +261,27 @@ def run_audio_detection_worker(
                             else:
                                 if effective_prediction > max_confidence:
                                     max_confidence = effective_prediction
+                                # Mejorar la clase de tamaño sólo si la nueva
+                                # clasificación es más fiable que la guardada.
+                                if (
+                                    current_size_class
+                                    and current_size_class != "inconclusive"
+                                    and current_size_confidence > size_confidence
+                                ):
+                                    size_class = current_size_class
+                                    size_confidence = current_size_confidence
                                 if prediction > 0.5:
                                     alert_time = current_time
                                     alert_time_str = time.strftime("%H:%M:%S", time.localtime(current_time))
                                     visual_pct = min(100, int(visual_confidence * 100))
+                                    size_tag = (
+                                        f" | Tamaño: {size_class} {int(size_confidence * 100)}%"
+                                        if size_class and size_class != "inconclusive"
+                                        else ""
+                                    )
                                     print(
                                         f"[AUDIO] ⚠ NUEVA DETECCIÓN A LAS {alert_time_str} - "
-                                        f"{visual_pct}% (raw: {prediction*100:.1f}%)"
+                                        f"{visual_pct}% (raw: {prediction*100:.1f}%){size_tag}"
                                     )
                                     if on_detection_event_fn:
                                         try:
@@ -208,6 +291,8 @@ def run_audio_detection_worker(
                                                     "timestamp": current_time,
                                                     "visual_confidence": float(visual_confidence),
                                                     "raw_prediction": float(prediction),
+                                                    "size_class": size_class,
+                                                    "size_confidence": float(size_confidence),
                                                 }
                                             )
                                         except Exception as callback_error:
@@ -221,15 +306,27 @@ def run_audio_detection_worker(
                             else:
                                 alert_time = None
                                 max_confidence = 0.0
+                                size_class = ""
+                                size_confidence = 0.0
 
-                        set_alert_state_fn(alert_time, max_confidence)
-                        set_detection_result_fn(is_drone, float(visual_confidence))
+                        _pack_alert_state(alert_time, max_confidence, size_class, size_confidence)
+                        _push_detection_result(
+                            is_drone,
+                            float(visual_confidence),
+                            size_class,
+                            size_confidence,
+                        )
 
                         status = "⚠ ALERTA ACTIVA" if is_drone else ""
                         visual_pct = min(100, int(visual_confidence * 100))
+                        size_suffix = (
+                            f" | Tamaño: {size_class} {int(size_confidence * 100)}%"
+                            if is_drone and size_class and size_class != "inconclusive"
+                            else ""
+                        )
                         print(
                             f"[AUDIO] Predicción: {visual_pct}% (raw: {prediction*100:.1f}%) | "
-                            f"Drone: {is_drone} {status}"
+                            f"Drone: {is_drone} {status}{size_suffix}"
                         )
                 except Exception as e:
                     print(f"[AUDIO] Error: {e}")

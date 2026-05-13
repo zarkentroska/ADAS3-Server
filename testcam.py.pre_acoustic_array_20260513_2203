@@ -193,34 +193,6 @@ from modules.ui_sliders import (
     draw_rf_drone_sliders as draw_rf_drone_sliders_core,
 )
 
-# Integración del array de micrófonos ESP32. El módulo es opcional: si por
-# cualquier motivo no se puede importar (pyserial ausente, modules/ no
-# desplegado, etc.) seguimos arrancando con stubs no-op para no matar el
-# servidor.
-try:
-    from acoustic_integration import (
-        acoustic_init as _acoustic_init,
-        acoustic_overlay as _acoustic_overlay,
-        acoustic_shutdown as _acoustic_shutdown,
-        acoustic_status_text as _acoustic_status_text,
-    )
-    _ACOUSTIC_AVAILABLE = True
-except Exception as _acoustic_import_err:  # pragma: no cover - defensivo
-    print(f"[ARRAY] acoustic_integration no disponible: {_acoustic_import_err}")
-    _ACOUSTIC_AVAILABLE = False
-
-    def _acoustic_init(*_args, **_kwargs):  # type: ignore[misc]
-        return None
-
-    def _acoustic_overlay(frame):  # type: ignore[misc]
-        return frame
-
-    def _acoustic_shutdown():  # type: ignore[misc]
-        return None
-
-    def _acoustic_status_text():  # type: ignore[misc]
-        return "ACOUSTIC ARRAY: module unavailable"
-
 # Obtener la ruta absoluta del directorio donde está este script
 # Si se ejecuta desde un ejecutable de PyInstaller, usar sys._MEIPASS
 # que contiene la ruta temporal donde se extraen los archivos
@@ -2941,52 +2913,6 @@ if telegram_config.get("enabled", False):
 else:
     print(t("telegram_disabled_start"))
 
-
-# --- ESP32 ACOUSTIC ARRAY (sensor direccional / confirmación) -------------
-# Hook conservador: NO encolamos directamente en Telegram para no duplicar
-# alertas con el clip de audio del móvil, que sigue siendo la vía oficial.
-# Sólo se encola un evento interno hacia el cliente vía el worker existente
-# (la app Android decidirá qué hacer con él) y se imprime traza en consola.
-acoustic_last_state_log = [0.0]  # rate-limit del log periódico de estado
-
-def handle_acoustic_array_detection(payload):
-    """Callback thread-safe disparado por acoustic_integration en cada
-    detección debounced del array ESP32. ``payload`` es un dict pequeño:
-
-        {"source": "acoustic_array", "doa_deg": float | None,
-         "energy": float, "confidence": float, "mic_count": int,
-         "timestamp": float}
-    """
-    try:
-        ts = payload.get("timestamp") or time.time()
-        confidence = float(payload.get("confidence") or 0.0)
-        doa = payload.get("doa_deg")
-        energy = float(payload.get("energy") or 0.0)
-        print(
-            f"[ARRAY] detection ts={ts:.1f} doa={doa} "
-            f"energy={energy:.2f} conf={confidence:.2f}"
-        )
-        # Reutilizamos el worker de eventos hacia el cliente. event_type es
-        # libre; usamos "acoustic_array" para distinguirlo del audio ML del
-        # móvil. Si el worker no reconoce el tipo, ignora silenciosamente.
-        try:
-            enqueue_client_detection_event(
-                "acoustic_array",
-                timestamp=ts,
-                confidence=confidence,
-            )
-        except Exception as _e_evt:
-            print(f"[ARRAY] client event enqueue falló: {_e_evt}")
-    except Exception as _e_cb:
-        print(f"[ARRAY] callback error: {_e_cb}")
-
-try:
-    _acoustic_init(alert_callback=handle_acoustic_array_detection)
-    print(f"[ARRAY] init OK -> {_acoustic_status_text()}")
-except Exception as _e_acoustic:
-    print(f"[ARRAY] init falló (no bloqueante): {_e_acoustic}")
-
-
 detecciones_count = 0
 fps_start_time = time.time()
 fps_frame_count = 0
@@ -3029,8 +2955,6 @@ while not stop_program:
 
         # Overlay TinySA incluso sin vídeo
         frame_negro = overlay_tinysa_graph(frame_negro)
-        # Badge del array acústico ESP32 (estado/conexión/DOA)
-        frame_negro = _acoustic_overlay(frame_negro)
 
         # Controles
         if yolo_enabled:
@@ -3240,10 +3164,8 @@ while not stop_program:
             detecciones_count = 0
         
         # Renderizado capas
-        frame = overlay_tinysa_graph(frame)
-        # Badge del array acústico ESP32 (estado/conexión/DOA)
-        frame = _acoustic_overlay(frame)
-
+        frame = overlay_tinysa_graph(frame) 
+        
         # --- DIBUJAR INDICADORES INTERACTIVOS ---
         if yolo_enabled:
             frame, current_click = draw_yolo_sliders(frame, current_mouse, current_click)
@@ -3468,9 +3390,5 @@ if p is not None:
 stop_client_event_worker()
 lan_discovery_manager.stop()
 telegram_notifier.stop()
-try:
-    _acoustic_shutdown()
-except Exception as _e_acoustic_shutdown:
-    print(f"[ARRAY] shutdown error (ignorado): {_e_acoustic_shutdown}")
 cv2.destroyAllWindows()
 print("Programa finalizado.")

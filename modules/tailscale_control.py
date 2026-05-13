@@ -1,11 +1,18 @@
 import os
 import re
+import shlex
 import subprocess
+import sys
 import threading
+import tempfile
 import time
 import webbrowser
 from tkinter import Tk, messagebox
+
+from modules.mainthread_dispatch import schedule_dialog
 from modules.ui_window_icon import apply_window_icon
+
+IS_MACOS = sys.platform == "darwin"
 
 
 def _show_message_async(kind, title, text):
@@ -20,7 +27,7 @@ def _show_message_async(kind, title, text):
             messagebox.showinfo(title, text)
         root.destroy()
 
-    threading.Thread(target=_runner, daemon=True).start()
+    schedule_dialog(_runner)
 
 
 def _looks_like_state_store_error(raw_text):
@@ -44,6 +51,24 @@ def _build_state_store_error_message(t_func, status_text):
     return base
 
 
+def _build_cli_command(tailscale_cmd, subcommand, *, is_windows):
+    if is_windows:
+        return f'"{tailscale_cmd}" {subcommand}'
+    return f"{shlex.quote(tailscale_cmd)} {subcommand}"
+
+
+def _run_macos_admin_shell_command(command, timeout=180):
+    """Ejecuta un comando shell en macOS solicitando credenciales de admin."""
+    escaped = command.replace("\\", "\\\\").replace('"', '\\"')
+    script = f'do shell script "{escaped}" with administrator privileges'
+    return subprocess.run(
+        ["osascript", "-e", script],
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
+
+
 def install_tailscale(
     *,
     t_func,
@@ -52,6 +77,50 @@ def install_tailscale(
     tailscale_installed_fn,
 ):
     """Instala Tailscale en modo silencioso y devuelve (ok, error_text)."""
+    if IS_MACOS:
+        if tailscale_installed_fn():
+            return True, ""
+
+        pkg_url = "https://pkgs.tailscale.com/stable/Tailscale-latest-macos.pkg"
+        pkg_path = os.path.join(tempfile.gettempdir(), "tailscale-latest-macos.pkg")
+        try:
+            download = subprocess.run(
+                ["curl", "-L", "--fail", "-o", pkg_path, pkg_url],
+                capture_output=True,
+                text=True,
+                timeout=180,
+            )
+            if download.returncode != 0:
+                details = (download.stderr or download.stdout or "").strip()
+                if details:
+                    return False, f"{t_func('tailscale_install_error')}\n\n{details[:300]}"
+                return False, t_func("tailscale_install_error")
+
+            install_cmd = f"installer -pkg {shlex.quote(pkg_path)} -target /"
+            install = _run_macos_admin_shell_command(install_cmd, timeout=300)
+            if install.returncode != 0:
+                details = (install.stderr or install.stdout or "").strip()
+                if details:
+                    return False, f"{t_func('tailscale_install_error')}\n\n{details[:300]}"
+                return False, t_func("tailscale_install_error")
+
+            # Levantar la app para que el daemon quede listo para "tailscale up".
+            subprocess.run(["open", "-a", "Tailscale"], capture_output=True, text=True, timeout=10)
+            time.sleep(2)
+
+            if tailscale_installed_fn():
+                return True, ""
+            return False, t_func("tailscale_install_error")
+        except Exception as e:
+            print(f"Error instalando Tailscale (macOS): {e}")
+            return False, t_func("tailscale_install_error")
+        finally:
+            try:
+                if os.path.exists(pkg_path):
+                    os.remove(pkg_path)
+            except Exception:
+                pass
+
     if os.name == "nt":
         installer_path = tailscale_installer_win
         if not os.path.exists(installer_path):
@@ -114,12 +183,13 @@ def toggle_tailscale(
     def connect_tailscale():
         print("[TAILSCALE] connect_tailscale() iniciado")
         is_windows = os.name == "nt"
+        is_macos = IS_MACOS
         tailscale_cmd = get_tailscale_path_fn()
         print(f"[TAILSCALE] Usando comando: {tailscale_cmd}")
 
         try:
             print("[TAILSCALE] Verificando estado actual...")
-            status_cmd = f'"{tailscale_cmd}" status' if is_windows else f"{tailscale_cmd} status"
+            status_cmd = _build_cli_command(tailscale_cmd, "status", is_windows=is_windows)
             status_result = subprocess.run(status_cmd, shell=True, capture_output=True, text=True, timeout=5)
             print(f"[TAILSCALE] tailscale status returncode: {status_result.returncode}")
             print(f"[TAILSCALE] tailscale status stdout: {status_result.stdout[:200]}")
@@ -204,10 +274,17 @@ def toggle_tailscale(
                 except Exception as e:
                     print(f"[TAILSCALE] Error abriendo navegador: {e}")
 
-            if not is_windows:
-                print("[TAILSCALE] Linux: Ejecutando tailscale up en background...")
+            if is_macos:
+                # En macOS, asegurar que la app/daemon esté levantada.
                 try:
-                    up_cmd = f"{tailscale_cmd} up"
+                    subprocess.run(["open", "-a", "Tailscale"], capture_output=True, text=True, timeout=10)
+                except Exception as e:
+                    print(f"[TAILSCALE] Error abriendo app de Tailscale en macOS: {e}")
+
+            if not is_windows:
+                print("[TAILSCALE] POSIX: Ejecutando tailscale up en background...")
+                try:
+                    up_cmd = _build_cli_command(tailscale_cmd, "up", is_windows=is_windows)
                     subprocess.Popen(
                         up_cmd,
                         shell=True,
@@ -222,7 +299,7 @@ def toggle_tailscale(
             def check_connection_periodic():
                 print("[TAILSCALE] Iniciando verificación periódica de conexión...")
                 max_attempts = 30 if auth_url else 10
-                status_cmd_check = f'"{tailscale_cmd}" status' if is_windows else f"{tailscale_cmd} status"
+                status_cmd_check = _build_cli_command(tailscale_cmd, "status", is_windows=is_windows)
                 for i in range(max_attempts):
                     time.sleep(1)
                     try:
@@ -262,7 +339,7 @@ def toggle_tailscale(
         try:
             tailscale_cmd = get_tailscale_path_fn()
             is_windows = os.name == "nt"
-            cmd = f'"{tailscale_cmd}" down' if is_windows else f"{tailscale_cmd} down"
+            cmd = _build_cli_command(tailscale_cmd, "down", is_windows=is_windows)
             result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=10)
             if result.returncode == 0:
                 set_running_fn(False)

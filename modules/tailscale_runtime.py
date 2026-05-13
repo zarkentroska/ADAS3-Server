@@ -1,4 +1,5 @@
 import os
+import sys
 
 
 def get_tailscale_path():
@@ -8,6 +9,17 @@ def get_tailscale_path():
             r"C:\Program Files\Tailscale\tailscale.exe",
             r"C:\Program Files (x86)\Tailscale\tailscale.exe",
             os.path.expanduser(r"~\AppData\Local\Tailscale\tailscale.exe"),
+        ]
+        for path in possible_paths:
+            if os.path.exists(path):
+                return path
+        return "tailscale"
+    if sys.platform == "darwin":
+        possible_paths = [
+            "/usr/local/bin/tailscale",
+            "/opt/homebrew/bin/tailscale",
+            "/Applications/Tailscale.app/Contents/MacOS/tailscale",
+            "/Applications/Tailscale.app/Contents/MacOS/Tailscale",
         ]
         for path in possible_paths:
             if os.path.exists(path):
@@ -56,6 +68,11 @@ def tailscale_installed(subprocess_module):
         return False
 
     try:
+        if sys.platform == "darwin":
+            # En macOS muchos entornos GUI arrancan sin PATH completo.
+            tailscale_path = get_tailscale_path()
+            if tailscale_path != "tailscale" and os.path.exists(tailscale_path):
+                return True
         result = subprocess_module.run(
             "tailscale version",
             shell=True,

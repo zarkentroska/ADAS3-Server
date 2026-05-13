@@ -1,10 +1,15 @@
-import threading
 from tkinter import Tk, messagebox, simpledialog
+
+from modules.mainthread_dispatch import IS_MACOS, schedule_dialog
 from modules.ui_window_icon import apply_window_icon
 
 
 def show_warning_async(translate_fn, title_key, message_key):
-    """Muestra un warning en un hilo aparte para no bloquear la UI principal."""
+    """Muestra un warning sin bloquear el hilo principal.
+
+    En Windows/Linux se lanza en un hilo aparte. En macOS se encola para
+    ejecutarse en el hilo principal (tkinter en macOS no es thread-safe).
+    """
 
     def _show_warning():
         root = Tk()
@@ -14,11 +19,11 @@ def show_warning_async(translate_fn, title_key, message_key):
         messagebox.showwarning(translate_fn(title_key), translate_fn(message_key))
         root.destroy()
 
-    threading.Thread(target=_show_warning, daemon=True).start()
+    schedule_dialog(_show_warning)
 
 
 def solicitar_nueva_ip(ip_actual, t_func):
-    """Muestra diálogo para cambiar la IP."""
+    """Muestra diálogo para cambiar la IP. Debe invocarse en el hilo principal en macOS."""
     root = Tk()
     root.withdraw()
     root.attributes("-topmost", True)
@@ -35,3 +40,7 @@ def solicitar_nueva_ip(ip_actual, t_func):
     if nueva_ip and nueva_ip.strip():
         return nueva_ip.strip()
     return None
+
+
+# Re-export para módulos que prefieran la constante desde aquí.
+__all__ = ["show_warning_async", "solicitar_nueva_ip", "IS_MACOS"]

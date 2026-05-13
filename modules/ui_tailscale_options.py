@@ -1,4 +1,5 @@
 import os
+import sys
 import threading
 import tkinter as tk
 import webbrowser
@@ -39,8 +40,12 @@ def show_tailscale_config_dialog(
     info_label.pack(anchor="w", pady=(0, 15))
 
     if not tailscale_installed_fn():
+        is_macos = sys.platform == "darwin"
         if os.name == "nt":
             installer_exists = os.path.exists(tailscale_installer_win)
+        elif is_macos:
+            # En macOS instalamos descargando el .pkg oficial en tiempo real.
+            installer_exists = True
         else:
             installer_exists = os.path.exists(tailscale_installer_linux)
 

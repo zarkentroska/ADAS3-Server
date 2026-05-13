@@ -2,6 +2,87 @@ import librosa
 import numpy as np
 
 
+# -----------------------------------------------------------------------------
+# Clasificación del tamaño del dron por firma sonora (heurística espectral).
+# -----------------------------------------------------------------------------
+#
+# Idea: la frecuencia de paso de pala (BPF = RPM/60 * n_palas) es más baja en
+# drones con hélices grandes (a bajas rpm) y más alta en drones pequeños con
+# hélices cortas (que giran mucho más rápido). Integramos la energía espectral
+# en tres bandas típicas y elegimos la dominante.
+#
+# Las bandas se solapan intencionadamente poco para dar separación clara y
+# evitar que ruido de fondo pulle la clasificación hacia "medium" por estar
+# entre medias.
+DRONE_SIZE_BANDS_HZ = {
+    "large":  (40.0, 150.0),
+    "medium": (150.0, 350.0),
+    "small":  (350.0, 1500.0),
+}
+
+# Confianza relativa mínima (energía de la banda dominante / energía total en
+# el rango 40–1500 Hz) para comprometerse con una clase. Por debajo de esto
+# marcamos "inconclusive" para no mostrar un suffix erróneo.
+_DRONE_SIZE_MIN_CONFIDENCE = 0.45
+
+
+def classify_drone_size_from_audio(
+    audio_window_bytes,
+    source_sample_rate=44100,
+    min_duration_seconds=0.5,
+):
+    """Clasifica un dron como ``small``/``medium``/``large`` por firma sonora.
+
+    Parámetros
+    ----------
+    audio_window_bytes : bytes
+        Ventana de audio PCM int16 mono tal y como llega del stream (sin
+        resamplear ni normalizar).
+    source_sample_rate : int
+        Sample rate de ``audio_window_bytes``.
+    min_duration_seconds : float
+        Duración mínima de la ventana para intentar clasificar.
+
+    Devuelve
+    --------
+    (size_class, confidence) : tuple[str, float]
+        ``size_class`` es ``"small" | "medium" | "large" | "inconclusive"``.
+        ``confidence`` es la fracción de energía [0, 1] que cae en la banda
+        asignada respecto al total en 40–1500 Hz.
+    """
+    try:
+        data = np.frombuffer(audio_window_bytes, dtype=np.int16)
+    except (TypeError, ValueError):
+        return "inconclusive", 0.0
+
+    if data.size < int(source_sample_rate * min_duration_seconds):
+        return "inconclusive", 0.0
+
+    samples = data.astype(np.float32) / 32768.0
+
+    # Ventaneado Hann para reducir spectral leakage del pico espectral.
+    window = np.hanning(samples.size)
+    spectrum = np.fft.rfft(samples * window)
+    power = np.abs(spectrum) ** 2
+    freqs = np.fft.rfftfreq(samples.size, 1.0 / float(source_sample_rate))
+
+    band_energy = {}
+    for name, (low, high) in DRONE_SIZE_BANDS_HZ.items():
+        mask = (freqs >= low) & (freqs < high)
+        band_energy[name] = float(power[mask].sum())
+
+    total = sum(band_energy.values())
+    if total <= 1e-9:
+        return "inconclusive", 0.0
+
+    best_name = max(band_energy, key=band_energy.get)
+    confidence = band_energy[best_name] / total
+
+    if confidence < _DRONE_SIZE_MIN_CONFIDENCE:
+        return "inconclusive", float(confidence)
+    return best_name, float(confidence)
+
+
 def extract_features_realtime(
     audio_chunk,
     audio_sample_rate,
