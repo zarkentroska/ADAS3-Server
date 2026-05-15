@@ -178,8 +178,94 @@ from modules.ui_indicators import (
     draw_yolo_settings_icon as draw_yolo_settings_icon_ui,
     draw_yolo_indicator as draw_yolo_indicator_ui,
 )
+
+# Audio-source indicator landed in modules.ui_indicators in a later commit
+# than the rest of the file. If the user has a stale checkout where
+# modules/ui_indicators.py is older than testcam.py we don't want the
+# whole server to die on import — we print a clear hint and fall back to a
+# no-op renderer. The user will see a missing button on the UI and the
+# error message in stdout instead of an unhelpful traceback.
+try:
+    from modules.ui_indicators import (
+        draw_audio_source_indicator as draw_audio_source_indicator_ui,
+    )
+except ImportError:
+    print(
+        "[ADAS3] WARNING: modules/ui_indicators.py no expone "
+        "draw_audio_source_indicator. Tienes un checkout parcial: "
+        "actualiza modules/ui_indicators.py (y reinstala dependencias si "
+        "procede). El selector AUDIO: MIC MOVIL / ARRAY ESP32 quedara "
+        "oculto hasta que sincronices."
+    )
+
+    def draw_audio_source_indicator_ui(  # type: ignore[no-redef]
+        frame, mouse_pos, click_pos, audio_source_id,
+        audio_source_status_text, t_func,
+    ):
+        return frame, False
+
 from modules.ep32_client import Ep32ClientController
 from modules.ep32_tracker import Ep32AutoTracker
+
+# Audio source controller + ESP32 array audio bridge: ambos son nuevos,
+# si el usuario tiene un checkout parcial mostramos un mensaje claro y
+# arrancamos con phone_mic forzado (sin array) para que el resto del
+# servidor siga funcionando.
+try:
+    from modules.audio_source import (
+        AudioSourceController,
+        SOURCE_ESP32_ARRAY,
+        SOURCE_PHONE_MIC,
+    )
+except ImportError as _imp_err_audio_source:
+    print(
+        "[ADAS3] WARNING: modules/audio_source.py no se ha podido importar "
+        f"({_imp_err_audio_source}). Selector de fuente de audio "
+        "deshabilitado. Sincroniza modules/audio_source.py."
+    )
+    SOURCE_PHONE_MIC = "phone_mic"
+    SOURCE_ESP32_ARRAY = "esp32_array"
+
+    class AudioSourceController:  # type: ignore[no-redef]
+        """Fallback inerte: devuelve siempre phone_mic, ignora set/cycle."""
+        def __init__(self, *args, **kwargs):
+            self._on_change = None
+        def get(self):
+            return SOURCE_PHONE_MIC
+        def is_phone(self):
+            return True
+        def is_array(self):
+            return False
+        def set(self, source):
+            return False
+        def cycle(self):
+            return SOURCE_PHONE_MIC
+        def label_key(self):
+            return "audio_source_phone_mic"
+        def status_text(self):
+            return ""
+
+try:
+    from modules.array_audio_bridge import ArrayAudioBridge
+except ImportError as _imp_err_audio_bridge:
+    print(
+        "[ADAS3] WARNING: modules/array_audio_bridge.py no se ha podido "
+        f"importar ({_imp_err_audio_bridge}). El audio del array ESP32 NO "
+        "se reenviara al pipeline Keras hasta que sincronices este modulo."
+    )
+
+    class ArrayAudioBridge:  # type: ignore[no-redef]
+        """Fallback inerte: nunca arranca, get_state() vacio."""
+        def __init__(self, *args, **kwargs):
+            pass
+        def start(self):
+            return False
+        def stop(self):
+            return None
+        def is_running(self):
+            return False
+        def get_state(self):
+            return {"running": False, "source": "unavailable"}
 from modules.ui_language_options import show_language_selection_dialog as show_language_selection_dialog_ui
 from modules.ui_telegram_options import show_telegram_options_dialog as show_telegram_options_dialog_ui
 from modules.ui_tinysa_options import (
@@ -212,7 +298,7 @@ except Exception as _acoustic_import_err:  # pragma: no cover - defensivo
     def _acoustic_init(*_args, **_kwargs):  # type: ignore[misc]
         return None
 
-    def _acoustic_overlay(frame):  # type: ignore[misc]
+    def _acoustic_overlay(frame, **_kwargs):  # type: ignore[misc]
         return frame
 
     def _acoustic_shutdown():  # type: ignore[misc]
@@ -220,6 +306,15 @@ except Exception as _acoustic_import_err:  # pragma: no cover - defensivo
 
     def _acoustic_status_text():  # type: ignore[misc]
         return "ACOUSTIC ARRAY: module unavailable"
+
+# array_audio_overlay: badge separado para nivel PCM. Misma defensiva
+# que arriba — si la versión instalada de acoustic_integration no lo
+# expone, caemos a un no-op para no romper la UI.
+try:
+    from acoustic_integration import array_audio_overlay as _array_audio_overlay
+except Exception:
+    def _array_audio_overlay(frame, **_kwargs):  # type: ignore[misc]
+        return frame
 
 # Obtener la ruta absoluta del directorio donde está este script
 # Si se ejecuta desde un ejecutable de PyInstaller, usar sys._MEIPASS
@@ -259,6 +354,7 @@ LANGUAGE_CONFIG_FILE = os.path.join(CONFIG_DIR, "language_config.json")
 YOLO_MODELS_CONFIG = os.path.join(CONFIG_DIR, "yolo_models_config.json")
 ADVANCED_INTERVALS_FILE = os.path.join(CONFIG_DIR, "tinysa_advanced_intervals.json")
 TELEGRAM_CONFIG_FILE = os.path.join(CONFIG_DIR, "telegram_config.json")
+AUDIO_SOURCE_CONFIG_FILE = os.path.join(CONFIG_DIR, "audio_source_config.json")
 
 # Inicializar runtime de idioma/sensibilidad persistidos
 initialize_i18n(
@@ -677,6 +773,38 @@ def draw_ep32_indicator(frame, mouse_pos, click_pos):
         t_func=t,
     )
 
+# Geometría del panel flotante EP32 (debe coincidir con
+# draw_ep32_floating_controls en modules/ui_indicators.py). Si esa función
+# cambia, ajustar aquí también.
+_EP32_DPAD_PANEL_TOP_Y = 230
+_EP32_DPAD_BTN_S = 48
+_EP32_DPAD_GAP = 6
+_EP32_DPAD_HEADER_H = 40
+_EP32_DPAD_AUTOTRACK_H = 30
+_EP32_DPAD_PANEL_H = (
+    _EP32_DPAD_HEADER_H
+    + _EP32_DPAD_BTN_S * 3
+    + _EP32_DPAD_GAP * 2
+    + _EP32_DPAD_GAP
+    + _EP32_DPAD_AUTOTRACK_H
+    + 14
+)
+_ACOUSTIC_BADGE_MARGIN = 10
+
+
+def _compute_acoustic_badge_y(frame_shape):
+    """Devuelve la coordenada Y a partir de la cual debe dibujarse el
+    badge ``ARRAY OK``: justo debajo del panel del D-pad EP32. Si el
+    frame es muy bajo (no cabe), la propia función ``acoustic_overlay``
+    re-clampea para que no se salga; aquí devolvemos el ideal."""
+    h = int(frame_shape[0]) if frame_shape else 0
+    desired = _EP32_DPAD_PANEL_TOP_Y + _EP32_DPAD_PANEL_H + _ACOUSTIC_BADGE_MARGIN
+    if h and desired > h - 8:
+        # Hueco insuficiente: lo dejamos a 8 px del borde inferior.
+        return max(8, h - 80)
+    return desired
+
+
 def draw_ep32_floating_controls(frame, mouse_pos, click_pos):
     """Wrapper del panel flotante EP32 (implementación en ui_indicators.py)."""
     return draw_ep32_floating_controls_ui(
@@ -697,6 +825,120 @@ def _handle_ep32_action(action_id):
             args=(action_id,),
             daemon=True,
         ).start()
+
+
+def _handle_ep32_toggle():
+    """Toggle EP32 BT. Estrategia:
+
+      ON  → POST /adas3/ep32-control {"action":"enable"} en background.
+            Si el cliente Android lo acepta (200/202), el puente Bluetooth
+            arranca automaticamente y el polling de /adas3/ep32-status
+            iniciara la rueda de actualizacion de estado.
+            Si el endpoint no existe (APK legacy, 404/405), caemos al
+            probe HTTP simple del comando, manteniendo la UX previa.
+
+      OFF → POST /adas3/ep32-control {"action":"disable"} para apagar
+            tambien el puente del lado movil (no solo el flag local).
+            Si el endpoint no existe, dejamos el estado local en OFF.
+
+    Sea cual sea el camino, el flag local `ep32_controller.is_enabled()`
+    se actualiza de inmediato para que la UI no se quede a medias.
+    """
+    new_value = ep32_controller.toggle_enabled()
+
+    def _bridge_op():
+        try:
+            if new_value:
+                result = ep32_controller.request_control("enable")
+                if result.get("status") == "legacy_bridge":
+                    # APK antiguo: degradar al probe que ya existia.
+                    ep32_controller.probe_bridge()
+                else:
+                    # Pulir el estado leyendo el snapshot real.
+                    ep32_controller.fetch_status()
+            else:
+                result = ep32_controller.request_control("disable")
+                if result.get("status") == "legacy_bridge":
+                    # No hay endpoint de control; el toggle local ya queda en OFF.
+                    pass
+        except Exception as e:
+            print(f"[EP32] toggle bridge op fallo: {e}")
+
+    threading.Thread(target=_bridge_op, daemon=True).start()
+    return new_value
+
+
+def _refresh_ep32_status_async():
+    """Lanza un fetch del snapshot del puente sin bloquear la UI. Util como
+    'tick' periodico cuando EP32 BT esta activo y se quiere ver si la
+    ESP32 ha pasado de SCANNING a CONNECTED.
+
+    Implementa **single-flight**: si una petición sigue en vuelo, no
+    se lanza otra. Antes era posible tener N peticiones concurrentes
+    cuando el bridge no respondía (cada fetch_status bloqueaba 1.8 s
+    pero el tick disparaba a 1.5 s).
+    """
+    global _ep32_status_in_flight, _ep32_status_consecutive_failures
+    if not ep32_controller.is_enabled():
+        return
+    if ep32_controller.supports_status() is False:
+        # APK antiguo, no hay endpoint; no insistir.
+        return
+    if _ep32_status_in_flight:
+        return
+    _ep32_status_in_flight = True
+
+    def _run():
+        global _ep32_status_in_flight, _ep32_status_consecutive_failures
+        try:
+            result = ep32_controller.fetch_status()
+            # `fetch_status` devuelve `{}` ante error/unreachable y un
+            # dict no vacío cuando hay snapshot real. Usamos esto para
+            # detectar "fallo" sin acoplarnos a las constantes
+            # STATUS_BRIDGE_UNREACHABLE/etc.
+            if isinstance(result, dict) and result:
+                _ep32_status_consecutive_failures = 0
+            else:
+                _ep32_status_consecutive_failures = min(
+                    _ep32_status_consecutive_failures + 1, 8
+                )
+        except Exception:
+            _ep32_status_consecutive_failures = min(
+                _ep32_status_consecutive_failures + 1, 8
+            )
+        finally:
+            _ep32_status_in_flight = False
+
+    threading.Thread(target=_run, daemon=True).start()
+
+
+def _current_ep32_poll_interval_s():
+    """Backoff exponencial: 1.5 s sano, x2 por cada fallo consecutivo,
+    cap a `_EP32_STATUS_POLL_MAX_INTERVAL_S`. Tras una respuesta OK
+    el contador vuelve a 0 → 1.5 s."""
+    if _ep32_status_consecutive_failures <= 0:
+        return _EP32_STATUS_POLL_INTERVAL_S
+    interval = _EP32_STATUS_POLL_INTERVAL_S * (
+        2 ** min(_ep32_status_consecutive_failures, 4)
+    )
+    return min(interval, _EP32_STATUS_POLL_MAX_INTERVAL_S)
+
+
+def _tick_ep32_status_poll():
+    """Llamado en cada frame: si ha pasado el intervalo (con backoff
+    si el bridge está unreachable) desde el ultimo poll y EP32 BT está
+    activo, lanza un refresh async. El polling de status del puente
+    Android está totalmente desacoplado del playback/audio: aunque el
+    bridge falle a 192.168.x.x, el audio que SÍ llega por push sigue
+    funcionando."""
+    global _ep32_status_last_poll_ts
+    if not ep32_controller.is_enabled():
+        return
+    now = time.time()
+    if (now - _ep32_status_last_poll_ts) < _current_ep32_poll_interval_s():
+        return
+    _ep32_status_last_poll_ts = now
+    _refresh_ep32_status_async()
 
 
 # Códigos de tecla de flechas en distintas plataformas/backends OpenCV.
@@ -744,6 +986,20 @@ print(f"Iniciando con IP guardada: {base_url}")
 # --- EP32 Bluetooth Controller ---
 ep32_controller = Ep32ClientController(base_url_supplier=lambda: base_url)
 ep32_tracker = Ep32AutoTracker(ep32_controller)
+# Polling cadence del nuevo /adas3/ep32-status. Se refresca de forma
+# asincrona desde el render loop, asi que el coste por frame es
+# despreciable (un timestamp y, como mucho, lanzar un hilo daemon).
+_EP32_STATUS_POLL_INTERVAL_S = 1.5
+# Backoff exponencial cuando el puente Android está unreachable: pasamos
+# de 1.5 s a 3 s, 6 s, 12 s, 24 s (tope). Esto evita que la consola se
+# llene de "EP32 status bridge unreachable" cada 1.5 s cuando el móvil
+# no responde, y deja muchas menos peticiones en vuelo (cada una bloquea
+# hasta `timeout_seconds` = 1.8 s). Tan pronto como una respuesta vuelva
+# OK, se restablece a 1.5 s.
+_EP32_STATUS_POLL_MAX_INTERVAL_S = 24.0
+_ep32_status_last_poll_ts = 0.0
+_ep32_status_consecutive_failures = 0
+_ep32_status_in_flight = False
 
 # Estados auxiliares Windows / conexión video
 video_connection_manager = VideoConnectionManager()
@@ -776,6 +1032,74 @@ audio_recent_lock = threading.Lock()
 audio_recent_total_bytes = 0
 audio_stream_sample_rate = 44100
 audio_stream_channels = 1
+
+# --- Selector de origen del audio para Keras (phone_mic | esp32_array) ---
+# El controlador sólo guarda la elección y dispara un callback en cada
+# cambio; las funciones reales de arranque/parada viven más abajo
+# (`_apply_audio_source_change`). El callback se conecta una vez la
+# funcion exista en el modulo.
+audio_source_controller = AudioSourceController(
+    config_file=AUDIO_SOURCE_CONFIG_FILE,
+    default_source=SOURCE_PHONE_MIC,
+)
+# Bridge HTTP que tira de /adas3/mic-array/pcm del cliente Android y
+# empuja PCM al mismo `audio_buffer` que consume el worker Keras. No se
+# arranca hasta que el usuario seleccione `esp32_array`.
+# ─── Playback compartido (PlaybackRouter) ────────────────────────────
+# Antes hubo un intento de tener dos streams PyAudio simultáneos: uno
+# en `stream_audio()` (phone_mic) y otro en `_ensure_array_playback_stream`
+# (array). Resultado: PortAudio/ALSA/CoreAudio se quedaban mudos en
+# alguna de las dos fuentes tras un cambio de origen porque no toleran
+# bien dos `pa.open(output=True)` activos a la vez en el mismo proceso.
+#
+# Solución: un único stream PyAudio compartido (`PlaybackRouter`) que
+# expone `write_chunk(chunk, rate, channels)`. Ambos caminos (phone y
+# array) escriben aquí. El router gestiona el mute global y reabre el
+# stream sólo cuando cambia rate/channels.
+from modules.playback_router import PlaybackRouter  # noqa: E402
+
+playback_router = PlaybackRouter(
+    # `get_pyaudio_instance` se define MÁS ABAJO en este mismo módulo
+    # (a ~100 líneas) porque depende de helpers de inicialización
+    # diferida. Usamos un lambda para resolver el nombre por scope
+    # global EN TIEMPO DE EJECUCIÓN (cuando llegue el primer chunk,
+    # ya estará definido), no en este punto del import (donde aún no
+    # lo está y daría NameError al importar testcam).
+    pyaudio_factory=lambda: get_pyaudio_instance(),
+    audio_format=pyaudio.paInt16,
+    frames_per_buffer=CHUNK,
+    on_log=lambda msg: print(f"[PLAYBACK] {msg}"),
+)
+
+
+def _play_array_chunk(chunk, rate, channels):
+    """Callback invocado por ArrayAudioBridge por cada chunk PCM.
+    Delega en el `PlaybackRouter` compartido — el router decide si
+    está muteado, abre/reabre el stream PyAudio si rate/channels
+    cambiaron, y nunca abre un segundo stream paralelo al de
+    phone_mic."""
+    if not chunk:
+        return
+    written = playback_router.write_chunk(chunk, rate or 44100, channels or 1)
+    if written:
+        try:
+            _append_audio_recent_chunk(chunk)
+        except Exception:
+            pass
+
+
+array_audio_bridge = ArrayAudioBridge(
+    base_url_supplier=lambda: base_url,
+    audio_buffer=audio_buffer,
+    on_stream_meta=lambda rate, channels: _on_array_stream_meta(rate, channels),
+    # Defensa contra dual-stream: aunque haya un cierre lento del socket
+    # tras cambiar a phone_mic, los bytes en vuelo del array se descartan
+    # ANTES de tocar el audio_buffer compartido.
+    should_push=lambda: audio_source_controller.is_array() and audio_detection_enabled,
+    # Playback de array: PyAudio escribe en los altavoces respetando el
+    # mute global. La firma del callback es (chunk, rate, channels).
+    on_pcm_chunk=_play_array_chunk,
+)
 audio_recent_max_seconds = 6
 audio_detection_result = {
     "is_drone": False,
@@ -2125,12 +2449,28 @@ def toggle_audio_detection():
             if not cargar_modelo_audio():
                 return
         
-        # Si el audio no está activo, iniciarlo automáticamente (con playback muteado)
+        # Si el audio no está activo, iniciarlo automáticamente. ANTES
+        # esto forzaba `audio_playback_muted = True`, lo que dejaba al
+        # PlaybackRouter en estado MUTE sin que el usuario lo supiera ni
+        # tuviera un control visible para revertirlo (el icono de
+        # volumen toggle-a start_audio/stop_audio, no el mute). Resultado:
+        # Keras recibía audio y detectaba, pero el altavoz NO sonaba ni
+        # con phone ni con array. Ahora se arranca con el playback en el
+        # mismo estado en que lo dejó el usuario por última vez (default
+        # False = no muteado). Mute deliberado disponible vía
+        # `toggle_audio_mute` (tecla 'm') o vía toggle_audio_mute() expuesto
+        # por API.
         if not audio_enabled:
-            global audio_playback_muted
-            audio_playback_muted = True  # Mutear playback automáticamente
             start_audio()
-            print("[AUDIO] Stream iniciado automáticamente (playback muteado)")
+            print("[AUDIO] Stream iniciado automáticamente "
+                  f"(playback {'muteado' if audio_playback_muted else 'activo'})")
+
+        # Vaciar PCM residual (p. ej. micrófono del móvil) antes de Keras.
+        try:
+            while True:
+                audio_buffer.get_nowait()
+        except queue.Empty:
+            pass
         
         # Iniciar thread de detección (IA)
         audio_detection_enabled = True
@@ -2436,35 +2776,51 @@ def stream_audio():
 
                 print(f"[AUDIO] Stream configurado: {parsed_channels} canal(es) @ {parsed_sample_rate} Hz")
 
-                # El servidor Android envía PCM crudo directamente, sin header WAV
-                # Inicializar PyAudio antes de leer datos
-                pa = get_pyaudio_instance()
-                audio_stream = pa.open(format=pyaudio.paInt16,
-                                      channels=parsed_channels,
-                                      rate=parsed_sample_rate,
-                                      output=True,
-                                      frames_per_buffer=CHUNK)
-                
+                # El servidor Android envía PCM crudo directamente, sin header WAV.
+                # Antes esta función abría su propio `pa.open(output=True)`.
+                # Ahora delega en `playback_router`: un único stream
+                # compartido evita el conflicto de dos `output=True`
+                # paralelos que dejaba mudas a ambas fuentes tras un
+                # cambio de origen. Mantenemos `audio_stream = None` por
+                # compatibilidad con código viejo que lo lea (lectores
+                # del estado, log, etc.) — todo el playback va por el
+                # router.
+                audio_stream = None
+                playback_router.set_muted(audio_playback_muted)
+
                 # Leer chunks de PCM directamente (el timeout ya está configurado en la petición)
                 for chunk in r.iter_content(chunk_size=CHUNK):
                     if stop_audio_thread:
                         break
-                    if chunk and audio_stream:
-                        try:
-                            # Solo reproducir si no está muteado
-                            if not audio_playback_muted:
-                                audio_stream.write(chunk)
-                            
-                            if audio_detection_enabled:
-                                try:
-                                    audio_buffer.put_nowait(chunk)
-                                except queue.Full:
-                                    pass  # Buffer lleno, descartar chunk
-                            _append_audio_recent_chunk(chunk)
-                                    
-                        except Exception as e:
-                            print(f"Error audio escribiendo chunk: {e}")
-                            break
+                    if not chunk:
+                        continue
+                    try:
+                        # 1) Playback compartido. El router internamente
+                        # respeta el mute global y reabre el stream
+                        # PyAudio si rate/channels cambiaron respecto al
+                        # último escritor (p.ej. tras un cambio de
+                        # fuente array→phone).
+                        playback_router.set_muted(audio_playback_muted)
+                        playback_router.write_chunk(
+                            chunk, parsed_sample_rate, parsed_channels
+                        )
+
+                        # 2) Defensa contra dual-stream: si el usuario ha
+                        # cambiado a la fuente array, descartamos chunks
+                        # del micro del móvil que aún estuvieran en
+                        # vuelo. Tarde o temprano el thread saldrá por
+                        # stop_audio_thread, pero hasta entonces NO
+                        # contaminamos el audio_buffer del Keras.
+                        if audio_detection_enabled and \
+                                audio_source_controller.is_phone():
+                            try:
+                                audio_buffer.put_nowait(chunk)
+                            except queue.Full:
+                                pass  # Buffer lleno, descartar chunk
+                        _append_audio_recent_chunk(chunk)
+                    except Exception as e:
+                        print(f"Error audio escribiendo chunk: {e}")
+                        break
                 
                 # Si llegamos aquí, la conexión se estableció correctamente
                 break
@@ -2501,44 +2857,366 @@ def stream_audio():
 
 def start_audio():
     global audio_thread, stop_audio_thread, audio_enabled
-    
-    # Si hay un hilo activo, detenerlo primero y esperar a que termine
-    if audio_thread is not None and audio_thread.is_alive():
+
+    # Sincroniza el estado del PlaybackRouter con el flag global de mute.
+    # Cualquier desincronización aquí dejaba al router en estado MUTE
+    # mientras la UI pintaba el icono "no muteado", y el síntoma era
+    # "Keras recibe audio, sin altavoz". Mejor un punto único de
+    # sincronización en cada arranque.
+    playback_router.set_muted(audio_playback_muted)
+
+    # Si el usuario ha seleccionado el array ESP32 como origen, NO se
+    # arranca el stream HTTP /audio del movil. El ArrayAudioBridge se
+    # encargara del transporte PCM y empujara al mismo audio_buffer que
+    # consume el worker Keras.
+    if audio_source_controller.is_array():
+        audio_enabled = True
+        if not array_audio_bridge.is_running():
+            array_audio_bridge.start()
+        print(f"Audio iniciado (origen: ESP32 array, mute={audio_playback_muted})")
+        return
+
+    # Si hay un hilo activo, detenerlo primero y esperar a que termine. SOLO
+    # entonces metemos el delay de 1 s que el servidor Android necesita para
+    # detectar la desconexión anterior. En arranque en frío (audio_thread
+    # is None) ahorramos ese segundo y la UI no se queda colgada.
+    needs_reconnect_pause = (audio_thread is not None and
+                             audio_thread.is_alive())
+    if needs_reconnect_pause:
         stop_audio_thread = True
         audio_thread.join(timeout=3)
-    
-    # Esperar un poco para que el servidor Android detecte la desconexión anterior
-    time.sleep(1)
-    
+        time.sleep(1)
+
     stop_audio_thread = False
     audio_enabled = True
     audio_thread = threading.Thread(target=stream_audio, daemon=True)
     audio_thread.start()
-    print("Audio iniciado")
+    print("Audio iniciado (origen: phone mic)")
 
 def stop_audio():
     global stop_audio_thread, audio_enabled, audio_thread, audio_detection_enabled
-    
+
+    # Apaga el bridge ESP32 incondicionalmente: aunque ahora el origen
+    # sea phone_mic, podria haber un thread del array vivo del cambio
+    # anterior.
+    try:
+        array_audio_bridge.stop()
+    except Exception as e:
+        print(f"[AUDIO-SRC] No se pudo parar array bridge: {e}")
+    # No cerramos el `playback_router` aquí: es compartido y el siguiente
+    # chunk de la nueva fuente lo reusará. Si el formato cambia, el
+    # propio router cerrará/abrirá el stream PyAudio internamente.
+
     if audio_thread is None or not audio_thread.is_alive():
+        audio_enabled = False
         return
-    
+
     if audio_detection_enabled:
         toggle_audio_detection()
-    
+
     stop_audio_thread = True
     audio_enabled = False
-    
+
     if audio_thread:
         audio_thread.join(timeout=2)
-    
+
     print("Audio detenido")
 
 def toggle_audio_mute():
     """Mute/Unmute el playback de audio sin afectar la detección"""
     global audio_playback_muted
     audio_playback_muted = not audio_playback_muted
+    # Sincroniza el router compartido. Sin esto, el thread del bridge
+    # podría seguir empujando chunks al stream porque el router tiene
+    # su propio estado de mute. La fuente de verdad sigue siendo
+    # `audio_playback_muted` (lo lee el camino phone en cada chunk);
+    # esto sólo replica el flag al router para el camino array.
+    playback_router.set_muted(audio_playback_muted)
     status = "MUTE" if audio_playback_muted else "UNMUTE"
     print(f"[AUDIO] Playback {status}")
+
+
+def _on_volume_icon_click():
+    """Comportamiento del clic en el icono de altavoz.
+
+    Antes hacía start_audio/stop_audio, lo cual paraba TAMBIÉN la
+    detección Keras y el stream HTTP — el usuario lo experimentaba
+    como "apagué el speaker y se rompió todo". Ahora:
+
+    1. Si el audio nunca se ha arrancado (audio_enabled=False), lo
+       arranca por conveniencia (con el playback en el estado actual
+       de `audio_playback_muted`).
+    2. Si ya está corriendo, sólo togglea el mute del PLAYBACK. Keras,
+       el bridge y el stream phone siguen exactamente igual.
+    """
+    if not audio_enabled:
+        start_audio()
+        return
+    toggle_audio_mute()
+
+
+# ---------------------------------------------------------------------------
+# Selector de origen de audio para el modelo Keras
+# ---------------------------------------------------------------------------
+
+def _on_array_stream_meta(rate, channels):
+    """Callback del ArrayAudioBridge: ajusta los metadatos del stream
+    para que el resto del pipeline (Keras worker, normalizacion) use el
+    mismo sample rate y canales que el array reporta."""
+    global audio_stream_sample_rate, audio_stream_channels
+    try:
+        audio_stream_sample_rate = int(rate)
+        audio_stream_channels = int(channels)
+        print(f"[AUDIO-SRC] Stream array: {channels}ch @ {rate} Hz")
+    except Exception as e:
+        print(f"[AUDIO-SRC] meta callback: {e}")
+
+
+def _stop_phone_stream_keep_flags():
+    """Detiene únicamente el hilo HTTP /audio sin tocar audio_enabled ni
+    audio_detection_enabled. Necesario al cambiar de fuente: queremos
+    apagar el productor previo SIN destruir el estado lógico ("audio on,
+    detección on") que tenemos que restaurar con la fuente nueva.
+
+    stop_audio() es la función de "apagar audio del todo" desde el botón
+    de la UI y SÍ modifica los flags — no la usamos aquí."""
+    global audio_thread, stop_audio_thread, audio_stream
+    if audio_thread is None or not audio_thread.is_alive():
+        return
+    stop_audio_thread = True
+    try:
+        audio_thread.join(timeout=2)
+    except Exception as e:
+        print(f"[AUDIO-SRC] join stream_audio: {e}")
+    audio_thread = None
+    if audio_stream is not None:
+        try:
+            audio_stream.stop_stream()
+            audio_stream.close()
+        except Exception:
+            pass
+        audio_stream = None
+
+
+def _apply_audio_source_change(old_source, new_source):
+    """Llamado por AudioSourceController cuando el usuario cambia de
+    origen. Para el productor activo y arranca el otro.
+
+    Regresión que solucionamos: antes llamábamos a ``stop_audio()`` que
+    pone ``audio_enabled = False`` y desactiva la detección. Luego al
+    decidir si arrancar el nuevo productor mirábamos ``audio_enabled``,
+    que SIEMPRE veía False, y el audio quedaba muerto tras un cambio.
+    Ahora capturamos el estado lógico ANTES de tocar nada y lo
+    restauramos al final con el productor nuevo."""
+    print(f"[AUDIO-SRC] Cambio de origen: {old_source} -> {new_source}")
+    # 1. Snapshot del estado lógico antes de mover nada.
+    was_audio_enabled = bool(audio_enabled)
+    was_detection_enabled = bool(audio_detection_enabled)
+
+    # 2. Apagar AMBOS productores idempotentemente, sin tocar flags.
+    try:
+        array_audio_bridge.stop()
+    except Exception as e:
+        print(f"[AUDIO-SRC] No se pudo parar array bridge: {e}")
+    _stop_phone_stream_keep_flags()
+
+    # 3. Vaciar el buffer compartido para no mezclar PCM viejo y nuevo
+    # (lo consume run_audio_detection_worker en chunks de int16).
+    try:
+        while True:
+            audio_buffer.get_nowait()
+    except queue.Empty:
+        pass
+
+    # 4. Si el audio o la detección estaban activos, arrancar el productor
+    # nuevo. Si no, dejamos los productores parados y respetamos la
+    # voluntad del usuario (botón de audio en OFF).
+    if not (was_audio_enabled or was_detection_enabled):
+        print("[AUDIO-SRC] Audio estaba en OFF; no rearrancamos productores.")
+        return
+
+    if new_source == SOURCE_PHONE_MIC:
+        # Camino existente: HTTP /audio del cliente Android (mic interno).
+        start_audio()
+    elif new_source == SOURCE_ESP32_ARRAY:
+        # Camino preferido: /adas3/mic-array/pcm; si el APK devuelve 404,
+        # ArrayAudioBridge reintenta en /audio (donde Android ya sirve
+        # el PCM del array con esp32_array).
+        array_audio_bridge.start()
+
+
+def toggle_audio_source():
+    """Avanza al siguiente origen (botón / atajo de teclado)."""
+    new_value = audio_source_controller.cycle()
+    print(f"[AUDIO-SRC] Origen ahora: {new_value}")
+    return new_value
+
+
+def set_audio_source(new_source):
+    return audio_source_controller.set(new_source)
+
+
+def get_audio_source():
+    return audio_source_controller.get()
+
+
+def get_audio_source_status_text():
+    """Texto corto para la UI: 'PHONE MIC' / 'ESP32 ARRAY (streaming)'.
+
+    Incluye tasa kbps si el productor activo la conoce, y para el array
+    también el último age en segundos para diagnosticar overruns sin
+    abrir el log."""
+    src = audio_source_controller.get()
+    if src == SOURCE_ESP32_ARRAY:
+        bs = array_audio_bridge.get_state()
+        state = bs.get("state", "off")
+        bytes_pushed = bs.get("bytes_pushed", 0)
+        last_at = bs.get("last_chunk_at", 0.0)
+        # kbps aproximado en los últimos 5 s (suficiente para la UI; el
+        # bridge no mantiene ventana móvil, lo aproximamos con
+        # bytes_pushed / tiempo desde el arranque).
+        age = (time.time() - last_at) if last_at > 0 else -1.0
+        if state == "streaming" and last_at > 0:
+            # estado humano corto
+            return (f"ESP32 ARRAY [streaming, {bytes_pushed // 1024} kB, "
+                    f"age={age:.1f}s]")
+        return f"ESP32 ARRAY [{state}]"
+    # Para phone_mic exponemos también el sample rate efectivo cuando lo
+    # conocemos (lo deja stream_audio en audio_stream_sample_rate).
+    if audio_stream_sample_rate and audio_enabled:
+        return f"PHONE MIC [{audio_stream_sample_rate} Hz]"
+    return "PHONE MIC"
+
+
+# ---------------------------------------------------------------------------
+# Sincronización bidireccional con Android (/adas3/audio-source)
+#
+# Contrato del cliente Android (ya añadido en su side):
+#   GET  /adas3/audio-source -> {"source": "phone_mic"|"esp32_array", ...}
+#   POST /adas3/audio-source body {"source":"..."} -> 200/202/404/501
+#
+# Lo usamos para que cambiar fuente en CUALQUIER lado se vea en el otro:
+#   - Cuando el usuario pulsa el botón en el servidor, hacemos POST.
+#   - Periódicamente (cada ~3 s) hacemos GET y, si Android dice otra
+#     cosa, aplicamos su valor. El POST cierra el ciclo: la próxima vez
+#     que el server hace GET, recibe el mismo valor.
+# ---------------------------------------------------------------------------
+
+# Si el server inicia un cambio él mismo, marcamos un suppress para que
+# el siguiente GET de la poll-task no rebote el valor. Es pesimista:
+# 5 s ventana. Sin esto, una ráfaga de clicks en el server podría
+# autoresetearse si Android está lento contestando el POST.
+_audio_source_self_change_until = 0.0
+_audio_source_last_poll = 0.0
+_AUDIO_SOURCE_POLL_INTERVAL_S = 3.0
+_AUDIO_SOURCE_SELF_SUPPRESS_S = 5.0
+
+
+def _audio_source_endpoint_url():
+    base = (base_url or "").strip().rstrip("/")
+    if not base:
+        return ""
+    return f"{base}/adas3/audio-source"
+
+
+def _post_audio_source_to_android(new_source):
+    """Sin bloquear: notifica al Android del cambio de origen. No
+    levantamos excepciones — si Android no responde, el log lo dice y
+    seguimos con el cambio local."""
+    url = _audio_source_endpoint_url()
+    if not url:
+        return
+    try:
+        r = requests.post(url, json={"source": new_source}, timeout=(2, 3))
+        if r.status_code in (200, 202):
+            print(f"[AUDIO-SRC] Android aplicó la fuente: {new_source}")
+        elif r.status_code in (404, 501):
+            # El APK del usuario no implementa todavía el endpoint POST.
+            # No es un error: trabajamos en modo "solo server", el usuario
+            # tendrá que cambiar en Android manualmente la próxima vez si
+            # quiere reconciliarlo.
+            print(f"[AUDIO-SRC] Android sin endpoint /adas3/audio-source (HTTP {r.status_code}); cambio sólo server.")
+        else:
+            print(f"[AUDIO-SRC] Android respondió HTTP {r.status_code} al cambiar fuente.")
+    except requests.RequestException as e:
+        print(f"[AUDIO-SRC] No se pudo notificar a Android ({type(e).__name__}: {e}).")
+    except Exception as e:
+        print(f"[AUDIO-SRC] Error inesperado notificando a Android: {e}")
+
+
+def _poll_audio_source_from_android():
+    """Llamado periódicamente desde el render loop. Si Android reporta
+    una fuente distinta a la del controller local, la aplicamos aquí
+    (sin volver a POSTear, para no entrar en un bucle ping-pong)."""
+    global _audio_source_last_poll
+    now = time.time()
+    if (now - _audio_source_last_poll) < _AUDIO_SOURCE_POLL_INTERVAL_S:
+        return
+    _audio_source_last_poll = now
+
+    # Si acabamos de cambiar nosotros mismos, dejamos pasar la ventana de
+    # supresión para que Android tenga tiempo de aplicar y reflejar.
+    if now < _audio_source_self_change_until:
+        return
+
+    url = _audio_source_endpoint_url()
+    if not url:
+        return
+
+    def _worker():
+        try:
+            r = requests.get(url, timeout=(2, 3))
+            if r.status_code != 200:
+                return
+            data = r.json() if r.content else {}
+        except Exception:
+            return
+        remote = (data.get("source") or "").strip().lower()
+        if remote not in (SOURCE_PHONE_MIC, SOURCE_ESP32_ARRAY):
+            return
+        local = audio_source_controller.get()
+        if remote == local:
+            return
+        # Aplicamos el cambio venido de Android sin re-postear.
+        print(f"[AUDIO-SRC] Sync desde Android: {local} -> {remote}")
+        # set() es thread-safe internamente; aquí desactivamos el callback
+        # de POST con la flag self-change, porque la fuente del cambio ya
+        # es Android, no nosotros.
+        global _audio_source_self_change_until
+        _audio_source_self_change_until = time.time() + _AUDIO_SOURCE_SELF_SUPPRESS_S
+        audio_source_controller.set(remote)
+
+    threading.Thread(target=_worker, daemon=True).start()
+
+
+def _notify_android_audio_source_change(old_source, new_source):
+    """Hook adicional al _apply_audio_source_change: cuando el cambio
+    se ha originado en el server, hacemos POST a Android para que se
+    sincronice. Se llama después de aplicar el cambio local."""
+    global _audio_source_self_change_until
+    _audio_source_self_change_until = time.time() + _AUDIO_SOURCE_SELF_SUPPRESS_S
+    threading.Thread(
+        target=_post_audio_source_to_android,
+        args=(new_source,),
+        daemon=True,
+    ).start()
+
+
+# Engancha el callback una vez las funciones existen en este modulo.
+# Hace DOS cosas: aplica el cambio localmente Y notifica a Android para
+# que su UI quede sincronizada. Es seguro llamar a ambos: el primero es
+# síncrono (cambia productores), el segundo dispara un POST en hilo
+# aparte y, si Android no contesta, lo dice en stdout y seguimos.
+def _audio_source_on_change_combined(old_source, new_source):
+    try:
+        _apply_audio_source_change(old_source, new_source)
+    finally:
+        _notify_android_audio_source_change(old_source, new_source)
+
+try:
+    audio_source_controller._on_change = _audio_source_on_change_combined
+except Exception as _e_src_hook:
+    print(f"[AUDIO-SRC] No se pudo enganchar callback: {_e_src_hook}")
 
 def cambiar_ip_camara(cap_actual, nueva_ip=None):
     return cambiar_ip_camara_core(
@@ -2605,6 +3283,18 @@ def draw_audio_volume_icon(frame, mouse_pos, click_pos):
 
 def draw_audio_detection_toggle(frame, mouse_pos, click_pos):
     return draw_audio_detection_toggle_ui(frame, mouse_pos, click_pos, audio_detection_enabled, t)
+
+
+def draw_audio_source_indicator(frame, mouse_pos, click_pos):
+    """Indicador/selector del origen del audio para Keras (phone vs array)."""
+    return draw_audio_source_indicator_ui(
+        frame,
+        mouse_pos,
+        click_pos,
+        audio_source_id=audio_source_controller.get(),
+        audio_source_status_text=get_audio_source_status_text(),
+        t_func=t,
+    )
 
 
 def open_yolo_options_dialog():
@@ -3029,8 +3719,30 @@ while not stop_program:
 
         # Overlay TinySA incluso sin vídeo
         frame_negro = overlay_tinysa_graph(frame_negro)
-        # Badge del array acústico ESP32 (estado/conexión/DOA)
-        frame_negro = _acoustic_overlay(frame_negro)
+        # Badge "ARRAY DIR" (telemetría direccional). Sólo visible si EP32
+        # BT está ON. NO es audio audible — es la salida JSONL del ESP32
+        # (DOA estimada por balance L/R + energía).
+        _array_dir_y = _compute_acoustic_badge_y(frame_negro.shape)
+        frame_negro = _acoustic_overlay(
+            frame_negro,
+            ep32_enabled=ep32_controller.is_enabled(),
+            y_top=_array_dir_y,
+        )
+        # Badge "AUDIO ARRAY" (nivel PCM). Independiente del anterior:
+        # muestra rms/peak del audio crudo que llega del array y lo que
+        # se está reproduciendo por los altavoces. Esto distingue
+        # "bytes flowing" de "señal audible".
+        try:
+            _bridge_state = array_audio_bridge.get_state()
+            if audio_source_controller.is_array() and \
+                    _bridge_state.get("state") in ("streaming", "connecting"):
+                frame_negro = _array_audio_overlay(
+                    frame_negro,
+                    bridge_state=_bridge_state,
+                    y_top=_array_dir_y + 78,
+                )
+        except Exception as _e_aa_ov:
+            pass
 
         # Controles
         if yolo_enabled:
@@ -3071,24 +3783,28 @@ while not stop_program:
             open_yolo_options_dialog()
             current_click = None
         
-        # Icono de volumen de audio
+        # Icono de volumen de audio. Toggle de MUTE de playback (no
+        # arranca/para detección Keras).
         frame_negro, volume_icon_clicked = draw_audio_volume_icon(frame_negro, current_mouse, current_click)
         if volume_icon_clicked:
             if cap is None:
                 show_warning_async(t, 'no_streaming', 'no_streaming')
             else:
-                if audio_enabled: 
-                    stop_audio()
-                else: 
-                    start_audio()
+                _on_volume_icon_click()
             current_click = None
-        
+
         frame_negro, audio_det_clicked = draw_audio_detection_toggle(frame_negro, current_mouse, current_click)
         if audio_det_clicked:
             # toggle_audio_detection() inicia el stream automáticamente si no está activo
             toggle_audio_detection()
             current_click = None
-        
+
+        # Selector de origen de audio (PHONE MIC <-> ESP32 ARRAY)
+        frame_negro, audio_src_clicked = draw_audio_source_indicator(frame_negro, current_mouse, current_click)
+        if audio_src_clicked:
+            toggle_audio_source()
+            current_click = None
+
         # Tailscale
         frame_negro, tailscale_clicked = draw_tailscale_indicator(frame_negro, current_mouse, current_click)
         if tailscale_clicked:
@@ -3099,10 +3815,12 @@ while not stop_program:
             open_tailscale_options_dialog()
             current_click = None
 
-        # EP32 Bluetooth
+        # EP32 Bluetooth + sync de fuente de audio con Android
+        _tick_ep32_status_poll()
+        _poll_audio_source_from_android()
         frame_negro, ep32_clicked = draw_ep32_indicator(frame_negro, current_mouse, current_click)
         if ep32_clicked:
-            ep32_controller.toggle_enabled()
+            _handle_ep32_toggle()
             current_click = None
 
         # Bot Telegram
@@ -3241,8 +3959,25 @@ while not stop_program:
         
         # Renderizado capas
         frame = overlay_tinysa_graph(frame)
-        # Badge del array acústico ESP32 (estado/conexión/DOA)
-        frame = _acoustic_overlay(frame)
+        # Badge "ARRAY DIR" (telemetría direccional). NO es audio.
+        _array_dir_y = _compute_acoustic_badge_y(frame.shape)
+        frame = _acoustic_overlay(
+            frame,
+            ep32_enabled=ep32_controller.is_enabled(),
+            y_top=_array_dir_y,
+        )
+        # Badge "AUDIO ARRAY" (nivel PCM real).
+        try:
+            _bridge_state = array_audio_bridge.get_state()
+            if audio_source_controller.is_array() and \
+                    _bridge_state.get("state") in ("streaming", "connecting"):
+                frame = _array_audio_overlay(
+                    frame,
+                    bridge_state=_bridge_state,
+                    y_top=_array_dir_y + 78,
+                )
+        except Exception:
+            pass
 
         # --- DIBUJAR INDICADORES INTERACTIVOS ---
         if yolo_enabled:
@@ -3250,17 +3985,13 @@ while not stop_program:
         if tinysa_running:
             frame, current_click = draw_rf_drone_sliders(frame, current_mouse, current_click)
 
-        # 1. Icono de volumen de audio
+        # 1. Icono de volumen de audio. Toggle de MUTE de playback.
         frame, volume_icon_clicked = draw_audio_volume_icon(frame, current_mouse, current_click)
         if volume_icon_clicked:
-            # Verificar si hay streaming
             if cap is None:
                 show_warning_async(t, 'no_streaming', 'no_streaming')
             else:
-                if audio_enabled: 
-                    stop_audio()
-                else: 
-                    start_audio()
+                _on_volume_icon_click()
             current_click = None
             
         # 2. YOLO
@@ -3298,6 +4029,12 @@ while not stop_program:
             toggle_audio_detection()
             current_click = None
 
+        # 4b. Selector de origen de audio (PHONE MIC <-> ESP32 ARRAY)
+        frame, audio_src_clicked = draw_audio_source_indicator(frame, current_mouse, current_click)
+        if audio_src_clicked:
+            toggle_audio_source()
+            current_click = None
+
         # 5. Tailscale
         frame, tailscale_clicked = draw_tailscale_indicator(frame, current_mouse, current_click)
         if tailscale_clicked:
@@ -3308,10 +4045,12 @@ while not stop_program:
             open_tailscale_options_dialog()
             current_click = None
 
-        # 6. EP32 Bluetooth
+        # 6. EP32 Bluetooth + sync de fuente de audio con Android
+        _tick_ep32_status_poll()
+        _poll_audio_source_from_android()
         frame, ep32_clicked = draw_ep32_indicator(frame, current_mouse, current_click)
         if ep32_clicked:
-            ep32_controller.toggle_enabled()
+            _handle_ep32_toggle()
             current_click = None
 
         # 7. Bot Telegram

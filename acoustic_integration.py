@@ -29,6 +29,8 @@ from modules.esp32_acoustic_array import (
     AcousticArrayClient,
     AcousticArrayConfig,
     AcousticArrayState,
+    DEFAULT_WIRING,
+    default_wiring_dict,
     start_acoustic_array,
     stop_acoustic_array,
     get_client,
@@ -98,6 +100,16 @@ def acoustic_state() -> Optional[AcousticArrayState]:
         return _latest_state
 
 
+def acoustic_wiring() -> dict:
+    """Return the wiring currently advertised by the array, or the canonical
+    default if no payload-sourced wiring has been seen yet. Suitable for a
+    status endpoint or a /healthz-style summary."""
+    st = acoustic_state()
+    if st is not None and isinstance(st.wiring, dict) and st.wiring:
+        return dict(st.wiring)
+    return default_wiring_dict()
+
+
 def acoustic_status_text() -> str:
     """Short human-readable status, suitable for a status bar or log line."""
     st = acoustic_state()
@@ -107,8 +119,9 @@ def acoustic_status_text() -> str:
         return "ACOUSTIC ARRAY: disconnected"
     doa = "--" if st.doa_deg is None else f"{st.doa_deg:+.0f}deg"
     flag = "DET" if st.detected else "idle"
+    pair = f" pair={st.pair}" if st.pair else ""
     return (
-        f"ACOUSTIC ARRAY [{st.transport}] mic={st.mic_count} "
+        f"ACOUSTIC ARRAY [{st.transport}] mic={st.mic_count}{pair} "
         f"{flag} {doa} E={st.energy:.2f} C={st.confidence:.2f}"
     )
 
@@ -126,14 +139,19 @@ def _on_event(event_type: str, payload: dict, snapshot: AcousticArrayState) -> N
         log.warning("acoustic array disconnected %s", reason or "")
     elif event_type == "detection":
         log.info(
-            "acoustic detection: doa=%s energy=%.2f conf=%.2f",
+            "acoustic detection: doa=%s energy=%.2f conf=%.2f pair=%s",
             snapshot.doa_deg,
             snapshot.energy,
             snapshot.confidence,
+            snapshot.pair,
         )
         cb = _alert_callback
         if cb is not None:
             try:
+                # NOTE: this callback feeds the internal `acoustic_array`
+                # event queued towards the client. It MUST NOT trigger a
+                # Telegram alert directly — the phone-mic audio ML is the
+                # only Telegram source, to avoid duplicates.
                 cb(
                     {
                         "source": "acoustic_array",
@@ -141,6 +159,10 @@ def _on_event(event_type: str, payload: dict, snapshot: AcousticArrayState) -> N
                         "energy": snapshot.energy,
                         "confidence": snapshot.confidence,
                         "mic_count": snapshot.mic_count,
+                        "pair": snapshot.pair,
+                        "bus": snapshot.bus,
+                        "wiring": snapshot.wiring,
+                        "wiring_source": snapshot.wiring_source,
                         "timestamp": snapshot.last_message_at or time.time(),
                     }
                 )
@@ -153,23 +175,98 @@ def _on_event(event_type: str, payload: dict, snapshot: AcousticArrayState) -> N
 # ---------------------------------------------------------------------------
 
 
-def acoustic_overlay(frame: Any) -> Any:
-    """Draw a small status badge on the frame. Safe no-op if cv2 missing or
-    frame is None. Returns the (possibly modified) frame."""
+def acoustic_overlay(
+    frame: Any,
+    *,
+    ep32_enabled: bool = False,
+    anchor: str = "below-dpad",
+    y_top: Optional[int] = None,
+    badge_w: int = 260,
+    badge_h: int = 70,
+    show_when_disconnected: bool = False,
+    force_show: bool = False,
+) -> Any:
+    """Draw a small status badge on the frame.
+
+    Visibility policy (changed twice since v0.7):
+
+    - Old behaviour pinned the badge at top-right (x=w-270, y=10) and was
+      shown whenever ``acoustic_state()`` reported ``connected=True`` —
+      which, with simulation fallback, is *always at startup*. User
+      reported ``ARRAY OK (SERIAL) DOA ...`` showing without touching the
+      EP32 BT button, and overlapping the EP32 D-pad when the button was
+      pressed.
+    - New default policy: the badge is **only** drawn when the user has
+      EP32 BT enabled (``ep32_enabled=True``). The simulation transport
+      no longer leaks "ARRAY OK" into the UI at startup. Pass
+      ``show_when_disconnected=True`` to force the badge when the array
+      is reporting OFF, or ``force_show=True`` to bypass the EP32 gate
+      entirely (debug mode).
+
+    Position policy:
+
+    - ``anchor="below-dpad"`` (default): the badge sits *under* the EP32
+      D-pad floating panel — y is far enough down that the panel never
+      overlaps the badge, regardless of whether the user has the D-pad
+      open. Specifically, ``y_top`` defaults to **484**, which is below
+      the 230..476 region taken by ``draw_ep32_floating_controls``.
+    - ``anchor="below-ep32"`` (legacy): y=230, below the EP32 BT
+      *indicator* but on top of the D-pad. Kept for backwards
+      compatibility.
+    - ``anchor="top-right"`` (legacy): y=10, the original placement.
+    - ``y_top=<int>``: explicit override (testcam can compute the exact
+      y after measuring the D-pad panel and pass it here).
+
+    ``ep32_enabled`` should reflect ``Ep32ClientController.is_enabled()``.
+    """
     if frame is None:
         return frame
     st = acoustic_state()
     if st is None:
         return frame
+
+    # Visibility gate. The user explicitly does NOT want the badge to be
+    # visible while EP32 BT is off, even if the array is "connected" via
+    # the simulation transport. ``force_show=True`` lets a future debug
+    # toggle bypass this.
+    if not force_show and not ep32_enabled:
+        return frame
+    if not show_when_disconnected and not st.connected and not force_show:
+        # If the user turned EP32 on but the array hasn't reported yet,
+        # we still draw the badge in OFF state so they know the
+        # subsystem exists; that's what the previous gate already did.
+        # Only suppress when we *really* have nothing to show AND the
+        # caller said so explicitly.
+        if not ep32_enabled:
+            return frame
+
     try:
         import cv2  # type: ignore
     except Exception:
         return frame
 
     h, w = frame.shape[:2]
-    badge_w, badge_h = 260, 70
     x0 = w - badge_w - 10
-    y0 = 10
+
+    if y_top is not None:
+        y0 = int(y_top)
+    elif anchor == "top-right":
+        y0 = 10
+    elif anchor == "below-ep32":
+        # Legacy: directly under EP32 BT indicator at y=140. Overlaps the
+        # D-pad panel (y=230..476). Kept for compatibility only.
+        y0 = 230
+    else:
+        # Default "below-dpad": below the D-pad floating panel.
+        # draw_ep32_floating_controls uses panel_y=230 and panel_h~=246.
+        # Land at 484 (= 230 + 246 + 8 margin) and clamp below.
+        y0 = 484
+
+    # Clamp to frame so the badge never goes off-screen on small windows.
+    if y0 + badge_h > h - 8:
+        y0 = max(8, h - badge_h - 8)
+    if x0 < 8:
+        x0 = 8
 
     overlay = frame.copy()
     cv2.rectangle(overlay, (x0, y0), (x0 + badge_w, y0 + badge_h), (20, 20, 20), -1)
@@ -194,9 +291,10 @@ def acoustic_overlay(frame: Any) -> Any:
         frame, doa_txt, (x0 + 8, y0 + 42),
         cv2.FONT_HERSHEY_SIMPLEX, 0.45, (220, 220, 220), 1, cv2.LINE_AA,
     )
+    pair_txt = f" pair:{st.pair}" if st.pair else ""
     cv2.putText(
         frame,
-        f"E:{st.energy:.2f}  C:{st.confidence:.2f}  mic:{st.mic_count}",
+        f"E:{st.energy:.2f}  C:{st.confidence:.2f}  mic:{st.mic_count}{pair_txt}",
         (x0 + 8, y0 + 60),
         cv2.FONT_HERSHEY_SIMPLEX, 0.45, (200, 200, 200), 1, cv2.LINE_AA,
     )
@@ -222,5 +320,8 @@ __all__ = [
     "acoustic_state",
     "acoustic_status_text",
     "acoustic_overlay",
+    "acoustic_wiring",
     "AcousticArrayConfig",
+    "DEFAULT_WIRING",
+    "default_wiring_dict",
 ]

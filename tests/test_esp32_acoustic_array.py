@@ -7,6 +7,7 @@ These tests do not require pyserial or any real hardware. They cover:
     state snapshot, debounce, clean shutdown
 """
 
+import json
 import os
 import sys
 import threading
@@ -21,6 +22,8 @@ if ROOT not in sys.path:
 from modules.esp32_acoustic_array import (  # noqa: E402
     AcousticArrayClient,
     AcousticArrayConfig,
+    DEFAULT_WIRING,
+    default_wiring_dict,
     parse_message,
 )
 
@@ -211,6 +214,175 @@ class TestSimulatedClient(unittest.TestCase):
             n, 2,
             f"expected >=2 detections in 1.0s with det_period=0.2s, got {n}",
         )
+
+
+class TestDefaultWiring(unittest.TestCase):
+    """Pinout regression tests. These lock in the definitive 4-mic wiring;
+    if anyone re-numbers a GPIO without thinking, the suite breaks loudly."""
+
+    def test_default_wiring_summary(self):
+        self.assertEqual(DEFAULT_WIRING.mic_count, 4)
+        self.assertEqual(DEFAULT_WIRING.power_rail, "3V3")
+        self.assertEqual(DEFAULT_WIRING.common_ground, "GND")
+        self.assertEqual(len(DEFAULT_WIRING.mics), 4)
+        self.assertEqual(len(DEFAULT_WIRING.buses), 2)
+
+    def test_default_wiring_mics(self):
+        mics = {m.index: m for m in DEFAULT_WIRING.mics}
+        self.assertEqual(mics[1].pair, "A")
+        self.assertEqual(mics[1].side, "LEFT")
+        self.assertEqual(mics[1].sel_to, "GND")
+        self.assertEqual(mics[2].pair, "A")
+        self.assertEqual(mics[2].side, "RIGHT")
+        self.assertEqual(mics[2].sel_to, "3V3")
+        self.assertEqual(mics[3].pair, "B")
+        self.assertEqual(mics[3].side, "LEFT")
+        self.assertEqual(mics[3].sel_to, "GND")
+        self.assertEqual(mics[4].pair, "B")
+        self.assertEqual(mics[4].side, "RIGHT")
+        self.assertEqual(mics[4].sel_to, "3V3")
+
+    def test_default_wiring_buses(self):
+        buses = {b.pair: b for b in DEFAULT_WIRING.buses}
+        self.assertEqual(buses["A"].bclk_gpio, 14)
+        self.assertEqual(buses["A"].lrcl_gpio, 13)
+        self.assertEqual(buses["A"].dout_gpio, 34)
+        self.assertEqual(buses["A"].left_mic, 1)
+        self.assertEqual(buses["A"].right_mic, 2)
+        self.assertEqual(buses["B"].bclk_gpio, 22)
+        self.assertEqual(buses["B"].lrcl_gpio, 21)
+        self.assertEqual(buses["B"].dout_gpio, 35)
+        self.assertEqual(buses["B"].left_mic, 3)
+        self.assertEqual(buses["B"].right_mic, 4)
+
+    def test_default_wiring_remote_control(self):
+        rc = DEFAULT_WIRING.remote_control
+        self.assertEqual(rc.up_gpio, 26)
+        self.assertEqual(rc.down_gpio, 27)
+        self.assertEqual(rc.left_gpio, 32)
+        self.assertEqual(rc.right_gpio, 33)
+
+    def test_default_wiring_dict_round_trip(self):
+        d = default_wiring_dict()
+        self.assertEqual(d["mic_count"], 4)
+        self.assertEqual(len(d["mics"]), 4)
+        self.assertEqual(len(d["buses"]), 2)
+        self.assertEqual(
+            [b["dout_gpio"] for b in d["buses"]],
+            [34, 35],
+        )
+        self.assertEqual(
+            d["remote_control"],
+            {"up_gpio": 26, "down_gpio": 27, "left_gpio": 32, "right_gpio": 33},
+        )
+
+
+class TestParserExtendedMetadata(unittest.TestCase):
+    """Parser must preserve the new optional metadata keys verbatim."""
+
+    def test_parse_acoustic_with_pair_and_bus(self):
+        msg = parse_message(
+            '{"type":"acoustic","detected":true,"doa_deg":12.0,'
+            '"energy":0.5,"confidence":0.7,"mic_count":4,'
+            '"pair":"B","bus":"i2s1"}'
+        )
+        self.assertIsNotNone(msg)
+        self.assertEqual(msg["pair"], "B")
+        self.assertEqual(msg["bus"], "i2s1")
+
+    def test_parse_heartbeat_with_wiring(self):
+        wiring = default_wiring_dict()
+        line = json.dumps({
+            "type": "heartbeat",
+            "mic_count": 4,
+            "firmware": "fw-1",
+            "wiring": wiring,
+        })
+        msg = parse_message(line)
+        self.assertIsNotNone(msg)
+        self.assertEqual(msg["type"], "heartbeat")
+        self.assertEqual(msg["wiring"], wiring)
+
+    def test_parse_acoustic_with_config_synonym(self):
+        msg = parse_message(
+            '{"type":"acoustic","detected":false,"doa_deg":0,'
+            '"energy":0,"confidence":0,"config":{"mic_count":4}}'
+        )
+        self.assertIsNotNone(msg)
+        self.assertEqual(msg["type"], "acoustic")
+        self.assertEqual(msg["config"], {"mic_count": 4})
+
+
+class TestClientWiringState(unittest.TestCase):
+    """The client must seed default wiring and absorb payload wiring."""
+
+    def _direct_client(self):
+        # Disabled config so we can poke _handle_message directly without
+        # spinning up the worker thread (no simulation noise to deal with).
+        cfg = AcousticArrayConfig(enabled=False, transport="simulation")
+        return AcousticArrayClient(cfg)
+
+    def test_initial_state_has_default_wiring(self):
+        client = self._direct_client()
+        st = client.get_state()
+        self.assertEqual(st.mic_count, 4)
+        self.assertEqual(st.wiring_source, "default")
+        self.assertEqual(st.wiring, default_wiring_dict())
+
+    def test_minimal_payload_keeps_default_wiring(self):
+        client = self._direct_client()
+        # Minimal heartbeat without wiring metadata.
+        client._handle_message({"type": "heartbeat", "mic_count": 4,
+                                "firmware": "min-fw"})
+        st = client.get_state()
+        self.assertEqual(st.firmware, "min-fw")
+        self.assertEqual(st.wiring_source, "default")
+        # Default wiring is still in place.
+        self.assertEqual(st.wiring, default_wiring_dict())
+
+    def test_enriched_payload_overrides_wiring(self):
+        client = self._direct_client()
+        custom = default_wiring_dict()
+        # Tweak the dict to prove it is being preserved verbatim.
+        custom["buses"][0]["dout_gpio"] = 99
+        client._handle_message({
+            "type": "heartbeat",
+            "mic_count": 4,
+            "firmware": "rich-fw",
+            "wiring": custom,
+        })
+        st = client.get_state()
+        self.assertEqual(st.wiring_source, "payload")
+        self.assertEqual(st.wiring["buses"][0]["dout_gpio"], 99)
+
+    def test_pair_and_bus_are_stored(self):
+        client = self._direct_client()
+        client._handle_message({
+            "type": "acoustic",
+            "detected": True,
+            "doa_deg": 10.0,
+            "energy": 0.9,
+            "confidence": 0.9,
+            "mic_count": 4,
+            "pair": "B",
+            "bus": "i2s1",
+        })
+        st = client.get_state()
+        self.assertEqual(st.pair, "B")
+        self.assertEqual(st.bus, "i2s1")
+
+    def test_config_synonym_absorbed_as_wiring(self):
+        client = self._direct_client()
+        client._handle_message({
+            "type": "heartbeat",
+            "mic_count": 4,
+            "config": {"mic_count": 4, "buses": [], "mics": [],
+                       "remote_control": {}, "power_rail": "3V3",
+                       "common_ground": "GND"},
+        })
+        st = client.get_state()
+        self.assertEqual(st.wiring_source, "payload")
+        self.assertEqual(st.wiring["power_rail"], "3V3")
 
 
 if __name__ == "__main__":

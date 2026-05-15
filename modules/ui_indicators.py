@@ -317,6 +317,29 @@ def draw_language_indicator(frame, mouse_pos, click_pos, t_func):
     return draw_interactive_button(frame, text, x, y, 0, 0, color, mouse_pos, click_pos, align_right=True)
 
 
+def draw_audio_source_indicator(frame, mouse_pos, click_pos, audio_source_id,
+                                 audio_source_status_text, t_func):
+    """Indicador/selector del origen del audio para Keras.
+
+    Click → ciclar (phone_mic → esp32_array → phone_mic …). Se coloca
+    en el lado izquierdo bajo el mensaje ADB para no chocar con la
+    columna derecha (EP32, Telegram, idioma, ...).
+    """
+    x = 10
+    y = 110
+    if audio_source_id == "esp32_array":
+        color = (0, 200, 200)
+        text = t_func("audio_source_esp32_array")
+    else:
+        color = (200, 200, 0)
+        text = t_func("audio_source_phone_mic")
+    if audio_source_status_text:
+        text = f"{text}: {audio_source_status_text}"
+    return draw_interactive_button(
+        frame, text, x, y, 0, 0, color, mouse_pos, click_pos, align_right=False,
+    )
+
+
 def _draw_dpad_button(frame, mouse_pos, click_pos, x1, y1, x2, y2, label, action_id):
     """Dibuja un botón individual del D-pad y devuelve (frame, action_id|None)."""
     mx, my = mouse_pos

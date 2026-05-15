@@ -59,6 +59,147 @@ DEFAULT_UDP_PORT = 5005
 DEFAULT_HEARTBEAT_TIMEOUT_S = 5.0
 
 
+# ---------------------------------------------------------------------------
+# Definitive 4-microphone wiring (two I2S pairs + PC817 remote control).
+#
+# This is the physical layout the firmware/cliente actually use. Every mic
+# shares power (3V3) and ground from the ESP32; SEL is hardwired locally
+# (no GPIO) to GND for the LEFT channel and to 3V3 for the RIGHT channel of
+# each pair. Two independent I2S buses carry pair A and pair B.
+#
+#     ESP32 3V3 -> Mic1/Mic2/Mic3/Mic4  (single power rail in parallel)
+#     ESP32 GND -> Mic1..Mic4 + PC817   (common ground)
+#
+#     Pair A (I2S bus 0):
+#         BCLK=GPIO14, LRCL=GPIO13, DOUT=GPIO34
+#         Mic1 SEL->GND  -> LEFT
+#         Mic2 SEL->3V3  -> RIGHT
+#
+#     Pair B (I2S bus 1):
+#         BCLK=GPIO22, LRCL=GPIO21, DOUT=GPIO35
+#         Mic3 SEL->GND  -> LEFT
+#         Mic4 SEL->3V3  -> RIGHT
+#
+#     YT2000 / PC817 remote control:
+#         UP=GPIO26, DOWN=GPIO27, LEFT=GPIO32, RIGHT=GPIO33
+#
+# The server keeps this as the canonical default. If the client sends a
+# richer payload carrying its own `wiring` / `config` / `pair` / `bus`
+# metadata, we preserve it verbatim in the state; otherwise we fall back to
+# DEFAULT_WIRING so downstream consumers (overlay, internal events, status
+# endpoints) always see a coherent description.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class MicChannel:
+    """One physical microphone in the array."""
+
+    index: int          # 1..4, matches Mic1..Mic4 in the schematic
+    pair: str           # "A" or "B"
+    side: str           # "LEFT" or "RIGHT" (driven by SEL pin)
+    sel_to: str         # "GND" or "3V3"
+
+    def to_dict(self) -> dict:
+        return {
+            "index": self.index,
+            "pair": self.pair,
+            "side": self.side,
+            "sel_to": self.sel_to,
+        }
+
+
+@dataclass(frozen=True)
+class I2sBus:
+    """One I2S bus carrying a stereo pair of MEMS mics."""
+
+    pair: str           # "A" or "B"
+    bclk_gpio: int      # ESP32 GPIO number
+    lrcl_gpio: int
+    dout_gpio: int
+    left_mic: int       # index of the mic on LEFT channel
+    right_mic: int      # index of the mic on RIGHT channel
+
+    def to_dict(self) -> dict:
+        return {
+            "pair": self.pair,
+            "bclk_gpio": self.bclk_gpio,
+            "lrcl_gpio": self.lrcl_gpio,
+            "dout_gpio": self.dout_gpio,
+            "left_mic": self.left_mic,
+            "right_mic": self.right_mic,
+        }
+
+
+@dataclass(frozen=True)
+class RemoteControlPinout:
+    """YT2000 / PC817 opto-isolated remote control pinout."""
+
+    up_gpio: int
+    down_gpio: int
+    left_gpio: int
+    right_gpio: int
+
+    def to_dict(self) -> dict:
+        return {
+            "up_gpio": self.up_gpio,
+            "down_gpio": self.down_gpio,
+            "left_gpio": self.left_gpio,
+            "right_gpio": self.right_gpio,
+        }
+
+
+@dataclass(frozen=True)
+class ArrayWiring:
+    """Definitive physical wiring for the ESP32 + 4-mic acoustic array."""
+
+    power_rail: str = "3V3"
+    common_ground: str = "GND"
+    mic_count: int = 4
+    mics: tuple = ()                # tuple[MicChannel, ...]
+    buses: tuple = ()               # tuple[I2sBus, ...]
+    remote_control: RemoteControlPinout = field(
+        default_factory=lambda: RemoteControlPinout(26, 27, 32, 33)
+    )
+
+    def to_dict(self) -> dict:
+        return {
+            "power_rail": self.power_rail,
+            "common_ground": self.common_ground,
+            "mic_count": self.mic_count,
+            "mics": [m.to_dict() for m in self.mics],
+            "buses": [b.to_dict() for b in self.buses],
+            "remote_control": self.remote_control.to_dict(),
+        }
+
+
+DEFAULT_WIRING = ArrayWiring(
+    power_rail="3V3",
+    common_ground="GND",
+    mic_count=4,
+    mics=(
+        MicChannel(index=1, pair="A", side="LEFT",  sel_to="GND"),
+        MicChannel(index=2, pair="A", side="RIGHT", sel_to="3V3"),
+        MicChannel(index=3, pair="B", side="LEFT",  sel_to="GND"),
+        MicChannel(index=4, pair="B", side="RIGHT", sel_to="3V3"),
+    ),
+    buses=(
+        I2sBus(pair="A", bclk_gpio=14, lrcl_gpio=13, dout_gpio=34,
+               left_mic=1, right_mic=2),
+        I2sBus(pair="B", bclk_gpio=22, lrcl_gpio=21, dout_gpio=35,
+               left_mic=3, right_mic=4),
+    ),
+    remote_control=RemoteControlPinout(
+        up_gpio=26, down_gpio=27, left_gpio=32, right_gpio=33,
+    ),
+)
+
+
+def default_wiring_dict() -> dict:
+    """Return the canonical default wiring as a plain dict (deep copy safe)."""
+    return DEFAULT_WIRING.to_dict()
+
+
 @dataclass
 class AcousticArrayConfig:
     """Tunable parameters for the acoustic array client."""
@@ -166,6 +307,18 @@ class AcousticArrayState:
     confidence: float = 0.0
     detected: bool = False
 
+    # Last reported pair/bus this acoustic event came from, if the client
+    # bothers to send it (e.g. "A" or "B"). Optional metadata, never blocks
+    # processing.
+    pair: Optional[str] = None
+    bus: Optional[str] = None
+
+    # Physical wiring snapshot. Starts as the canonical default (set in the
+    # client constructor) and is overwritten verbatim if the client sends
+    # its own `wiring` / `config` metadata in a heartbeat or acoustic event.
+    wiring: dict = field(default_factory=dict)
+    wiring_source: str = "default"  # "default" | "payload"
+
     messages_received: int = 0
     parse_errors: int = 0
     last_error: str = ""
@@ -185,6 +338,11 @@ class AcousticArrayState:
 # ---------------------------------------------------------------------------
 
 # Field names accepted in JSON messages. Extras are ignored.
+#
+# New optional metadata keys (since the 4-mic / 2-pair wiring became
+# definitive): `pair`, `bus`, `wiring`, `config`. They flow through the
+# parser untouched; the worker decides what to store in the state and which
+# of them are authoritative against DEFAULT_WIRING.
 _ACOUSTIC_FIELDS = {
     "doa_deg",
     "energy",
@@ -193,6 +351,10 @@ _ACOUSTIC_FIELDS = {
     "mic_count",
     "firmware",
     "label",
+    "pair",
+    "bus",
+    "wiring",
+    "config",
 }
 
 
@@ -437,6 +599,9 @@ class _SimulationTransport(_Transport):
             doa = round(random.uniform(-180.0, 180.0), 1)
             energy = round(random.uniform(0.3, 0.95), 2)
             conf = round(random.uniform(0.6, 0.95), 2)
+            # Alternate the originating pair so the overlay/status code is
+            # exercised against both buses.
+            pair = "A" if int(now) % 2 == 0 else "B"
             return json.dumps(
                 {
                     "type": "acoustic",
@@ -445,12 +610,20 @@ class _SimulationTransport(_Transport):
                     "energy": energy,
                     "confidence": conf,
                     "mic_count": 4,
+                    "pair": pair,
                 }
             )
         if now >= self._next_hb:
             self._next_hb = now + self._hb_period
+            # Heartbeat carries the definitive wiring so an end-to-end
+            # simulation looks exactly like the real device.
             return json.dumps(
-                {"type": "heartbeat", "mic_count": 4, "firmware": "adas-array-sim-0.1"}
+                {
+                    "type": "heartbeat",
+                    "mic_count": 4,
+                    "firmware": "adas-array-sim-0.1",
+                    "wiring": DEFAULT_WIRING.to_dict(),
+                }
             )
         return None
 
@@ -480,6 +653,14 @@ class AcousticArrayClient:
         self._cfg = config or AcousticArrayConfig()
         self._state = AcousticArrayState()
         self._state.transport = self._cfg.transport
+        # Seed the state with the canonical 4-mic / 2-pair wiring. The client
+        # will overwrite this verbatim if the device sends its own wiring
+        # block in any payload (heartbeat or acoustic). mic_count defaults to
+        # 4 so the overlay/status text shows mic=4 even before the first
+        # heartbeat lands.
+        self._state.wiring = default_wiring_dict()
+        self._state.wiring_source = "default"
+        self._state.mic_count = DEFAULT_WIRING.mic_count
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
@@ -626,6 +807,31 @@ class AcousticArrayClient:
                     pass
             if "firmware" in msg and isinstance(msg["firmware"], str):
                 self._state.firmware = msg["firmware"]
+
+            # Optional enriched metadata. Accept whichever the firmware sends;
+            # if both `wiring` and `config` are present we treat `wiring` as
+            # the authoritative one (config is allowed as a synonym for older
+            # clients). Anything we receive is preserved verbatim and marked
+            # as `payload`-sourced. If nothing comes, we keep the default
+            # wiring seeded in __init__.
+            wiring_in = msg.get("wiring")
+            if wiring_in is None:
+                wiring_in = msg.get("config")
+            if isinstance(wiring_in, dict) and wiring_in:
+                self._state.wiring = dict(wiring_in)
+                self._state.wiring_source = "payload"
+                try:
+                    if "mic_count" in wiring_in:
+                        self._state.mic_count = int(wiring_in["mic_count"])
+                except (TypeError, ValueError):
+                    pass
+
+            pair_in = msg.get("pair")
+            if isinstance(pair_in, str) and pair_in:
+                self._state.pair = pair_in.upper()
+            bus_in = msg.get("bus")
+            if isinstance(bus_in, str) and bus_in:
+                self._state.bus = bus_in
 
             if msg_type == "acoustic":
                 doa = msg.get("doa_deg")
